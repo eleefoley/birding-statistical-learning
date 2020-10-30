@@ -8,7 +8,7 @@ This is the final project for Illinois Tech Math 569 Statistical Learning, Sprin
 We will use multiple methods to predict bird encounters, using the Cornell eBird data, and compare the results of each model.
 
 ## Structure
-### scr
+### src
 This folder holds all runable code for the project
 
 ### data
