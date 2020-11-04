@@ -1,0 +1,17 @@
+---
+title: "Following Best Practices for Using eBird Data Tutorial"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+---
+
+When looking for machine and statistical learning project, I ran across [Best Practices for Using eBird Data](https://cornelllabofornithology.github.io/ebird-best-practices/index.html). It walks through using random forest to predict bird encounter rates for a given species in a given region.  To properly understand this, I'm walking through the tutorial.
+
+```{e}
+install.packages("remotes")
+remotes::install_github("mstrimas/ebppackages")
+```
+
+This didn't work, so I assume that we'll be using _rebird_ and _auk_ and import the packages as we come acorss them.
+
+This recommends getting the full ebird text file, but 
