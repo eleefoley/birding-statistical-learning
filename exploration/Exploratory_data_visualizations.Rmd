@@ -1,0 +1,77 @@
+---
+title: "Exploratory data visualizations"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+---
+
+We requested this data through Cornell, who approved and granted access to the full eBird data.  We chose to restrict our modeling to the Northern Cardinal in Illinois to have a manageable size to work with.
+
+```{r}
+library(tidyverse)
+library(maps)
+library(ggmap)
+library(ggthemes)
+library(mapdata)
+```
+
+```{r}
+ebd <- read_tsv("../data/raw/ebd/ebd_US-IL_norcar_relSep-2020/ebd_US-IL_norcar_relSep-2020.txt",col_names = TRUE,)
+# ebd
+names(ebd) <- gsub(" ", "_", names(ebd))
+```
+
+```{r}
+states <- map_data("state")
+IL <- subset(states, region %in% c("illinois"))
+counties <- map_data("county")
+IL_county <- subset(counties, region == "illinois")
+
+il_base <- ggplot(data = IL, mapping = aes(x = long, y = lat, group = group)) + 
+  coord_fixed(1.3) + 
+  geom_polygon(color = "black", fill = NA) +
+  theme_tufte()
+
+il_observations <- ggplot(data = IL, mapping = aes(x = long, y = lat, group = group)) + 
+  geom_point(data = ebd, inherit.aes = FALSE, aes(x = LONGITUDE, y = LATITUDE), alpha = .01, color = 'red') +
+  coord_fixed(1.3) +
+  labs(title = "eBird Observations of Northern Cardinals") +
+  geom_polygon(color = "black", fill = NA) +
+  theme_tufte() + theme(
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank()
+    
+  )
+
+il_observations
+```
+
+
+```{r}
+date_observations <- ggplot(data = ebd, aes(x = OBSERVATION_DATE)) +
+  geom_histogram(stat = 'count', fill = 'red') +
+  ylim(0,500) +
+  labs(title = "eBird Observations of Northern Cardinals", y = "Number of Lists", x = "Obsesvation Date") +
+  theme_tufte()
+  
+date_observations
+```
+```{r}
+filter(ebd, OBSERVATION_DATE >= '2010-09-01')
+decade_observations <- ggplot(data = filter(ebd, OBSERVATION_DATE >= '2010-09-01'), aes(x = OBSERVATION_DATE)) +
+  geom_histogram(stat = 'count', fill = 'red') +
+  ylim(0,500) +
+  labs(title = "eBird Observations of Northern Cardinals", y = "Number of Lists", x = "Obsesvation Date") +
+  theme_tufte()
+  
+decade_observations
+```
+
+# References
+
+* [Drawing beautiful maps programmatically with R, sf and ggplot2 — Part 1: Basics](https://www.r-spatial.org/r/2018/10/25/ggplot2-sf.html)
+* (https://stackoverflow.com/questions/53601185/plotting-illinois-with-ggmap-and-ggplot-in-r)
