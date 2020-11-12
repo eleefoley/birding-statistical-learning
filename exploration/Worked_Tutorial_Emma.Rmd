@@ -14,4 +14,49 @@ remotes::install_github("mstrimas/ebppackages")
 
 This didn't work, so I assume that we'll be using _rebird_ and _auk_ and import the packages as we come acorss them.
 
-This recommends getting the full ebird text file, but 
+```{r}
+library(dplyr)
+library(auk)
+library(sf)
+library(rnaturalearth)
+library(dplyr)
+```
+
+This recommends getting the full ebird text file, but that is very large.  We instead requested data on Northern Cardinal sightings in Illinois.
+
+Set the path to our data
+```{r}
+# set ebd path
+auk_set_ebd_path("data/raw/ebd")
+```
+
+I got errors while trying to install 'sf', and used the following to resolve it:
+* https://community.rstudio.com/t/configuration-failed-for-package-units/76417
+  * sudo apt install libudunits2-dev
+* https://mothergeo-py.readthedocs.io/en/latest/development/how-to/gdal-ubuntu-pkg.html
+* https://stackoverflow.com/questions/44973639/trouble-installing-sf-due-to-gdal 
+  * gdalinfo --version
+  * sudo apt install gdalinfo
+
+```{r}
+# file to save spatial data
+gpkg_dir <- "data"
+if (!dir.exists(gpkg_dir))(
+  dir.create(gpkg_dir)
+)
+
+f_ne <- file.path(gpkg_dir,"gis-data.gpkg")
+
+#download bcrs
+tmp_dir <- normalizePath(tempdir())
+tmp_bcr <- file.path(tmp_dir, "bcr.zip")
+paste0("https://www.birdscanada.org/research/gislab/download/", 
+       "bcr_terrestrial_shape.zip") %>% 
+  download.file(destfile = tmp_bcr)
+unzip(tmp_bcr, exdir = tmp_dir)
+bcr <- file.path(tmp_dir, "BCR_Terrestrial_master_International.shp") %>% 
+  read_sf() %>% 
+  select(bcr_code = BCR, bcr_name = LABEL) %>% 
+  filter(bcr_code == 27)
+
+```

@@ -37,3 +37,11 @@ vignettes/*.pdf
 
 # R Environment Variables
 .Renviron
+
+# GIS and eBird data
+data/raw/*.csv
+data/raw/*.txt
+data/raw/*.tif
+data/raw/*.gpkg
+data/raw/ebd/*.txt
+
