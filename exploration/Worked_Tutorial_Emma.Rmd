@@ -60,3 +60,6 @@ bcr <- file.path(tmp_dir, "BCR_Terrestrial_master_International.shp") %>%
   filter(bcr_code == 27)
 
 ```
+
+The Birds Canada links have changed, so I went to github and downloaded the data zip for the project instead.
+
