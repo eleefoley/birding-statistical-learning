@@ -7,8 +7,11 @@ output:
 
 When looking for machine and statistical learning project, I ran across [Best Practices for Using eBird Data](https://cornelllabofornithology.github.io/ebird-best-practices/index.html). It walks through using random forest to predict bird encounter rates for a given species in a given region.  To properly understand this, I'm walking through the tutorial.
 
+<<<<<<< HEAD
 # Introduction
 
+=======
+>>>>>>> 8ddaf72676f352482826582b05ee6c0209c69ffa
 ```{e}
 install.packages("remotes")
 remotes::install_github("mstrimas/ebppackages")
@@ -16,6 +19,7 @@ remotes::install_github("mstrimas/ebppackages")
 
 This didn't work, so I assume that we'll be using _rebird_ and _auk_ and import the packages as we come acorss them.
 
+<<<<<<< HEAD
 ```{r}
 library(dplyr)
 library(auk)
@@ -276,3 +280,6 @@ box()
 par(new = TRUE, mar = c(0, 0, 3, 0))
 title("Wood Thrush eBird Observations\nJune 2010-2019, BCR 27")
 ```
+=======
+This recommends getting the full ebird text file, but 
+>>>>>>> 8ddaf72676f352482826582b05ee6c0209c69ffa
