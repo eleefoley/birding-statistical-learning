@@ -38,6 +38,7 @@ vignettes/*.pdf
 # R Environment Variables
 .Renviron
 <<<<<<< HEAD
+<<<<<<< HEAD
 
 # GIS and eBird data
 data/raw/*.csv
@@ -56,5 +57,7 @@ data/raw/*.dbf
 data/raw/*.sbn
 data/raw/*.shx
 data/raw/*.sbx
+=======
+>>>>>>> 8ddaf72676f352482826582b05ee6c0209c69ffa
 =======
 >>>>>>> 8ddaf72676f352482826582b05ee6c0209c69ffa
