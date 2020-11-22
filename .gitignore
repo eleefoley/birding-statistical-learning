@@ -44,4 +44,14 @@ data/raw/*.txt
 data/raw/*.tif
 data/raw/*.gpkg
 data/raw/ebd/*.txt
-
+data/raw/*.shp
+data/raw/*.zip
+data/raw/ebd/*.zip
+data/raw/*.doc
+data/raw/*.dbx
+data/raw/*.xml
+data/raw/*.prj
+data/raw/*.dbf
+data/raw/*.sbn
+data/raw/*.shx
+data/raw/*.sbx
