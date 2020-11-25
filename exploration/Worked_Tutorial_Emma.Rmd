@@ -236,6 +236,7 @@ write_csv(ebird, "../data/processed/ebd_cardinal_june_bcr22_zf.csv", na = "")
 head(ebird)
 
 # load and project gis data
+sf:::CPL_crs_from_proj4string("+init=epsg:102003")
 map_proj <- st_crs(102003)
 ne_land <- read_sf("../data/raw/gis-data.gpkg", "ne_land") %>% 
   st_transform(crs = map_proj) %>% 
