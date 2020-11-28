@@ -800,3 +800,41 @@ par(p)
 write.csv(ebird_habitat,'../data/processed/ebird_habitat.csv')
 write.csv(ebird_ss,'../data/processed/ebird_ss.csv')
 ```
+
+## 4.4 Random Forest
+```{r}
+ebird_split <- ebird_ss %>% 
+  # select only the columns to be used in the model
+  select(species_observed,
+         year, day_of_year,
+         time_observations_started, duration_minutes,
+         effort_distance_km, number_observers, 
+         starts_with("pland_"),
+         starts_with("elevation_")) %>% 
+  drop_na()
+# split 80/20
+ebird_split <- ebird_split %>% 
+  split(if_else(runif(nrow(.)) <= 0.8, "train", "test"))
+map_int(ebird_split, nrow)
+```
+
+```{r}
+detection_freq <- mean(ebird_split$train$species_observed)
+detection_freq
+```
+```{r}
+# ranger requires a factor response to do classification
+ebird_split$train$species_observed <- factor(ebird_split$train$species_observed)
+head(ebird_split)
+# grow random forest
+rf <- ranger(formula =  species_observed ~ ., 
+             num.trees = 200,
+             mtry = 5,
+             data = ebird_split$train,
+             importance = "impurity",
+             probability = TRUE,
+             replace = TRUE, 
+             sample.fraction = c(detection_freq, detection_freq))
+
+rf
+```
