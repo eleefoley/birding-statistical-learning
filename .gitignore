@@ -60,6 +60,7 @@ data/raw/*.sbx
 data/raw/*.gz
 data/raw/ebd/*.gz
 data/raw/*.pdf
+data/raw/ebd_*
 =======
 >>>>>>> 8ddaf72676f352482826582b05ee6c0209c69ffa
 =======
