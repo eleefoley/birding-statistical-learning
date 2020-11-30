@@ -15,7 +15,7 @@ install.packages("xfun")
 library(sf)
 library(rnaturalearth)
 library(dplyr)
-gpkg_dir <- "data"
+gpkg_dir <- "../data/raw"
 if (!dir.exists(gpkg_dir)) {
   dir.create(gpkg_dir)
 }
@@ -482,7 +482,7 @@ calculate_pland <- function(yr, regions, lc) {
 }
 # iterate over all years extracting landcover for all checklists in each
 lc_extract <- ebird_buff %>% 
-  mutate(pland = map2(year_lc, data, calculate_pland, lc = landcover)) %>% 
+  mutate(pland = map2(year_lc, data, calculate_pland, lc = landcover)) %>%
   select(pland) %>% 
   unnest(cols = pland)
 ```
@@ -542,7 +542,7 @@ r <- bcr %>%
   rasterize(r, field = 1) %>% 
   # remove any empty cells at edges
   trim()
-r <- writeRaster(r, filename = "data/prediction-surface.tif", overwrite = TRUE)
+r <- writeRaster(r, filename = "../data/raw/prediction-surface.tif", overwrite = TRUE)
 
 
 # get cell centers and create neighborhoods
@@ -607,4 +607,354 @@ par(mar = c(0.25, 0.25, 2, 0.25))
 t <- str_glue("Proportion of Deciduous Broadleaf Forest\n",
               "{max_lc_year} MODIS Landcover")
 plot(forest_cover, axes = FALSE, box = FALSE, col = viridis(10), main = t)
+```
+
+# Elevation
+
+```{r}
+elev <- raster("../data/raw/elevation_1KMmd_GMTEDmd.tif")
+# crop, buffer bcr by 10 km to provide a little wiggly room
+elev <- bcr %>% 
+  st_buffer(dist = 10000) %>% 
+  st_transform(crs = projection(elev)) %>% 
+  crop(elev, .) %>% 
+  projectRaster(crs = projection(landcover))
+
+# buffer each checklist location
+ebird_buff_noyear <- ebird %>% 
+  distinct(locality_id, latitude, longitude) %>% 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>% 
+  st_transform(crs = projection(elev)) %>% 
+  st_buffer(dist = neighborhood_radius)
+
+# extract elevation values and calculate median and sd
+locs <- st_set_geometry(ebird_buff_noyear, NULL) %>% 
+    mutate(id = row_number())
+elev_checklists <- exact_extract(elev, ebird_buff_noyear, progress = FALSE) %>% 
+  map_dfr(~ tibble(elevation_median = mean(.$value, na.rm = TRUE),
+                   elevation_sd = sd(.$value, na.rm = TRUE))) %>% 
+  # join to lookup table to get locality_id
+  bind_cols(locs, .)
+
+# extract and calculate median and sd
+elev_pred <- exact_extract(elev, r_cells, progress = FALSE) %>% 
+  map_dfr(~ tibble(elevation_median = mean(.$value, na.rm = TRUE),
+                   elevation_sd = sd(.$value, na.rm = TRUE))) %>% 
+  # join to lookup table to get locality_id
+  bind_cols(st_drop_geometry(r_cells), .)
+
+# checklist covariates
+pland_elev_checklist <- inner_join(pland, elev_checklists, by = "locality_id")
+write_csv(pland_elev_checklist, "../data/processed/pland-elev_location-year.csv")
+
+# prediction surface covariates
+pland_elev_pred <- inner_join(pland_coords, elev_pred, by = "id")
+write_csv(pland_elev_pred, "../data/processed/pland-elev_prediction-surface.csv")
+```
+
+install.packages(c("dggridR","lubridate","ranger","scam","PresenceAbsence","verification","ebirdst","fields","gridExtra"))
+
+```{r}
+library(remotes)
+remotes::install_github("r-barnes/dggridR")
+```
+
+```{r}
+library(sf)
+library(raster)
+library(dggridR)
+library(lubridate)
+library(ranger)
+library(scam)
+library(PresenceAbsence)
+library(verification)
+library(ebirdst)
+library(fields)
+library(gridExtra)
+library(tidyverse)
+# resolve namespace conflicts
+select <- dplyr::select
+map <- purrr::map
+projection <- raster::projection
+
+# set random number seed to insure fully repeatable results
+set.seed(1)
+
+# setup output directory for saved results
+if (!dir.exists("../output")) {
+  dir.create("../output")
+}
+
+# ebird data
+ebird <- read_csv("../data/processed/ebd_cardinal_june_bcr22_zf.csv") %>% 
+  # year required to join to habitat data
+  mutate(year = year(observation_date))
+
+# modis habitat covariates
+habitat <- read_csv("../data/raw/pland-elev_location-year.csv") %>% 
+  mutate(year = as.integer(year))
+
+# combine ebird and habitat data
+ebird_habitat <- inner_join(ebird, habitat, by = c("locality_id", "year"))
+
+# prediction surface
+pred_surface <- read_csv("../data/raw/pland-elev_prediction-surface.csv")
+# latest year of landcover data
+max_lc_year <- max(pred_surface$year)
+r <- raster("../data/raw/prediction-surface.tif")
+
+# load gis data for making maps
+map_proj <- st_crs(new_vector)
+ne_land <- read_sf("../data/raw/gis-data.gpkg", "ne_land") %>% 
+  st_transform(crs = map_proj) %>% 
+  st_geometry()
+bcr <- read_sf("../data/raw/gis-data.gpkg", "bcr") %>% 
+  st_transform(crs = map_proj) %>% 
+  st_geometry()
+ne_country_lines <- read_sf("../data/raw/gis-data.gpkg", "ne_country_lines") %>% 
+  st_transform(crs = map_proj) %>% 
+  st_geometry()
+ne_state_lines <- read_sf("../data/raw/gis-data.gpkg", "ne_state_lines") %>% 
+  st_transform(crs = map_proj) %>% 
+  st_geometry()
+```
+
+```{r}
+# bounding box to generate points from
+bb <- st_bbox(c(xmin = -0.1, xmax = 0.1, ymin = -0.1, ymax = 0.1), 
+              crs = 4326) %>% 
+  st_as_sfc() %>% 
+  st_sf()
+# random points
+pts <- st_sample(bb, 500) %>% 
+  st_sf(as.data.frame(st_coordinates(.)), geometry = .) %>% 
+  rename(lat = Y, lon = X)
+
+# contruct a hexagonal grid with ~ 5 km between cells
+dggs <- dgconstruct(spacing = 5)
+# for each point, get the grid cell
+pts$cell <- dgGEO_to_SEQNUM(dggs, pts$lon, pts$lat)$seqnum
+
+# sample one checklist per grid cell
+pts_ss <- pts %>% 
+  group_by(cell) %>% 
+  sample_n(size = 1) %>% 
+  ungroup()
+
+# generate polygons for the grid cells
+hexagons <- dgcellstogrid(dggs, unique(pts$cell), frame = FALSE) %>% 
+  st_as_sf()
+ggplot() +
+  geom_sf(data = hexagons) +
+  geom_sf(data = pts, size = 0.5) +
+  geom_sf(data = pts_ss, col = "red") +
+  theme_bw()
+```
+
+```{r}
+# generate hexagonal grid with ~ 5 km betweeen cells
+dggs <- dgconstruct(spacing = 5)
+# get hexagonal cell id and week number for each checklist
+checklist_cell <- ebird_habitat %>% 
+  mutate(cell = dgGEO_to_SEQNUM(dggs, longitude, latitude)$seqnum,
+         year = year(observation_date),
+         week = week(observation_date))
+# sample one checklist per grid cell per week
+# sample detection/non-detection independently 
+ebird_ss <- checklist_cell %>% 
+  group_by(species_observed, year, week, cell) %>% 
+  sample_n(size = 1) %>% 
+  ungroup()
+
+# original data
+nrow(ebird_habitat)
+#> [1] 48450
+count(ebird_habitat, species_observed) %>% 
+  mutate(percent = n / sum(n))
+#> # A tibble: 2 x 3
+#>   species_observed     n percent
+#>   <lgl>            <int>   <dbl>
+#> 1 FALSE            46355  0.957 
+#> 2 TRUE              2095  0.0432
+
+# after sampling
+nrow(ebird_ss)
+#> [1] 20093
+count(ebird_ss, species_observed) %>% 
+  mutate(percent = n / sum(n))
+#> # A tibble: 2 x 3
+#>   species_observed     n percent
+#>   <lgl>            <int>   <dbl>
+#> 1 FALSE            18617  0.927 
+#> 2 TRUE              1476  0.0735
+
+# convert checklists to spatial features
+all_pts <- ebird_habitat %>%  
+  st_as_sf(coords = c("longitude","latitude"), crs = 4326) %>%
+  st_transform(crs = map_proj) %>% 
+  select(species_observed)
+ss_pts <- ebird_ss %>%  
+  st_as_sf(coords = c("longitude","latitude"), crs = 4326) %>%
+  st_transform(crs = map_proj) %>% 
+  select(species_observed)
+both_pts <- list(before_ss = all_pts, after_ss = ss_pts)
+
+# map
+p <- par(mfrow = c(2, 1))
+for (i in seq_along(both_pts)) {
+  par(mar = c(0.25, 0.25, 0.25, 0.25))
+  # set up plot area
+  plot(st_geometry(both_pts[[i]]), col = NA)
+  # contextual gis data
+  plot(ne_land, col = "#dddddd", border = "#888888", lwd = 0.5, add = TRUE)
+  plot(bcr, col = "#cccccc", border = NA, add = TRUE)
+  plot(ne_state_lines, col = "#ffffff", lwd = 0.75, add = TRUE)
+  plot(ne_country_lines, col = "#ffffff", lwd = 1.5, add = TRUE)
+  # ebird observations
+  # not observed
+  plot(st_geometry(both_pts[[i]]),
+       pch = 19, cex = 0.1, col = alpha("#555555", 0.25),
+       add = TRUE)
+  # observed
+  plot(filter(both_pts[[i]], species_observed) %>% st_geometry(),
+       pch = 19, cex = 0.3, col = alpha("#4daf4a", 0.5),
+       add = TRUE)
+  # legend
+  legend("bottomright", bty = "n",
+         col = c("#555555", "#4daf4a"),
+         legend = c("Non-detection", "Detection"),
+         pch = 19)
+  box()
+  par(new = TRUE, mar = c(0, 0, 3, 0))
+  if (names(both_pts)[i] == "before_ss") {
+    title("Wood Thrush eBird Observations\nBefore subsampling")
+  } else {
+    title("After subsampling")
+  }
+}
+par(p)
+```
+
+# random forest
+
+```{r}
+ebird_split <- ebird_ss %>% 
+  # select only the columns to be used in the model
+  select(species_observed,
+         year, day_of_year,
+         time_observations_started, duration_minutes,
+         effort_distance_km, number_observers, 
+         starts_with("pland_"),
+         starts_with("elevation_")) %>% 
+  drop_na()
+# split 80/20
+ebird_split <- ebird_split %>% 
+  split(if_else(runif(nrow(.)) <= 0.8, "train", "test"))
+map_int(ebird_split, nrow)
+#>  test train 
+#>  3938 16135
+detection_freq <- mean(ebird_split$train$species_observed)
+
+# ranger requires a factor response to do classification
+ebird_split$train$species_observed <- factor(ebird_split$train$species_observed)
+# grow random forest
+rf <- ranger(formula =  species_observed ~ ., 
+             data = ebird_split$train,
+             importance = "impurity",
+             probability = TRUE,
+             replace = TRUE, 
+             sample.fraction = c(detection_freq, detection_freq))
+```
+
+# Calibration
+
+```{r}
+# make predictions on training data
+occ_pred <- rf$predictions[, 2]
+# convert the observered response back to a numeric value from factor
+occ_obs <- ebird_split$train$species_observed %>% 
+  as.logical() %>% 
+  as.integer()
+rf_pred_train <- tibble(obs = occ_obs, pred = occ_pred) %>% 
+  drop_na()
+
+# fit calibration model
+calibration_model <- scam(obs ~ s(pred, k = 5, bs = "mpi"), 
+                          gamma = 1.4,
+                          data = rf_pred_train)
+
+# calculate the average observed encounter rates for different 
+# categories of estimated encounter rates 
+
+average_encounter <- rf_pred_train %>%
+  mutate(pred_cat = cut(rf_pred_train$pred, breaks = seq(0, 1, by=0.02))) %>%
+  group_by(pred_cat) %>%
+  summarise(pred = mean(pred), obs = mean(obs), checklist_count = n()) %>%
+  ungroup()
+
+# plot
+cal_pred <- tibble(pred = seq(0, 1, length.out = 100))
+cal_pred <- predict(calibration_model, cal_pred, type = "response") %>% 
+  bind_cols(cal_pred, calibrated = .)
+ggplot(cal_pred) +
+  aes(x = pred, y = calibrated) +
+  geom_line() +
+  geom_point(data = average_encounter, 
+             aes(x = pred, y = obs, size = sqrt(checklist_count)),
+             show.legend = FALSE, shape = 1) +
+  labs(x = "Estimated encounter rate",
+       y = "Observed encounter rate",
+       title = "Calibration model")
+```
+
+# Assessment
+
+```{r}
+# predict on test data using calibrated model
+p_fitted <- predict(rf, data = ebird_split$test, type = "response")
+# extract probability of detection
+p_fitted <- p_fitted$predictions[, 2]
+# calibrate
+p_calibrated <- predict(calibration_model, 
+                        newdata = tibble(pred = p_fitted), 
+                        type = "response")
+rf_pred_test <- data.frame(id = seq_along(p_calibrated),
+                           # actual detection/non-detection
+                           obs = ebird_split$test$species_observed,
+                           # uncalibrated prediction
+                           fit = p_fitted,
+                           # calibrated prediction
+                           cal = p_calibrated) %>%
+  # constrain probabilities to 0-1
+  mutate(cal = pmin(pmax(cal, 0), 1)) %>% 
+  drop_na()
+
+# mean squared error (mse)
+mse_fit <- mean((rf_pred_test$obs - rf_pred_test$fit)^2, na.rm = TRUE)
+mse_cal <- mean((rf_pred_test$obs - rf_pred_test$cal)^2, na.rm = TRUE)
+
+# pick threshold to maximize kappa
+opt_thresh <- optimal.thresholds(rf_pred_test, opt.methods = "MaxKappa")
+
+# calculate accuracy metrics: auc, kappa, sensitivity, specificity,
+metrics_fit <- rf_pred_test %>% 
+  select(id, obs, fit) %>% 
+  presence.absence.accuracy(threshold = opt_thresh$fit, 
+                            na.rm = TRUE, 
+                            st.dev = FALSE)
+metrics_cal <- rf_pred_test %>% 
+  select(id, obs, cal) %>% 
+  presence.absence.accuracy(threshold = opt_thresh$cal, 
+                            na.rm = TRUE, 
+                            st.dev = FALSE)
+
+rf_assessment <- tibble(
+  model = c("RF", "Calibrated RF"),
+  mse = c(mse_fit, mse_cal),
+  sensitivity = c(metrics_fit$sensitivity, metrics_cal$sensitivity),
+  specificity = c(metrics_fit$specificity, metrics_cal$specificity),
+  auc = c(metrics_fit$AUC, metrics_cal$AUC),
+  kappa = c(metrics_fit$Kappa, metrics_cal$Kappa)
+)
+knitr::kable(rf_assessment, digits = 3)
 ```
