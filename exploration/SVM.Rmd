@@ -1,0 +1,51 @@
+---
+title: "Support Vector Machine"
+output: html_notebook
+---
+
+https://www.geeksforgeeks.org/classifying-data-using-support-vector-machinessvms-in-r/
+_Introduction to Statisitcal learning with Applications in R_, James, Witten, Hastie, Tibshirani
+* pg 359
+
+```{r}
+library(caTools) 
+library(e1071) 
+```
+
+```{r}
+train <- read.csv('../data/processed/ebird_split_train.csv')
+test <- read.csv('../data/processed/ebird_split_test.csv')
+names(train)
+train[2]
+```
+
+
+```{r}
+# Feature Scaling 
+train
+train <- train %>% mutate_at(-c(2), scale)
+test <- test %>% mutate_at(-c(2), scale)
+```
+
+```{r}
+classifier <- svm(formula = species_observed ~ ., 
+                 data = train, 
+                 type = 'C-classification', 
+                 kernel = 'linear') 
+```
+
+```{r}
+select(test, -c(2))
+
+classifier
+y_pred <- predict(classifier, newdata = select(test, -c(2))) 
+y_pred
+
+names(test[, 3])
+# Making the Confusion Matrix 
+nrow(y_pred)
+nrow(test$species_observed)
+
+confusion_matrix <- table(test$species_observed, y_pred) 
+
+```

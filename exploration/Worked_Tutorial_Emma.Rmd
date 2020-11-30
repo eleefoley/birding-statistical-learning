@@ -803,6 +803,7 @@ write.csv(ebird_ss,'../data/processed/ebird_ss.csv')
 
 ## 4.4 Random Forest
 ```{r}
+ebird_ss <- read.csv('../data/processed/ebird_ss.csv')
 ebird_split <- ebird_ss %>% 
   # select only the columns to be used in the model
   select(species_observed,
@@ -826,6 +827,9 @@ detection_freq
 # ranger requires a factor response to do classification
 ebird_split$train$species_observed <- factor(ebird_split$train$species_observed)
 head(ebird_split)
+write.csv(ebird_split$train, "../data/processed/ebird_split_train.csv", na = "")
+write.csv(ebird_split$test, "../data/processed/ebird_split_test.csv", na = "")
+
 # grow random forest
 rf <- ranger(formula =  species_observed ~ ., 
              num.trees = 200,
