@@ -724,6 +724,7 @@ ebird_ss <- checklist_cell %>%
 ```{r}
 # original data
 nrow(ebird_habitat)
+names(ebird_habitat)
 #> [1] 125202
 count(ebird_habitat, species_observed) %>% 
   mutate(percent = n / sum(n))
@@ -735,6 +736,8 @@ count(ebird_habitat, species_observed) %>%
 
 # after sampling
 nrow(ebird_ss)
+names(ebird_ss)
+head(ebird_ss)
 #> [1] 20093
 count(ebird_ss, species_observed) %>% 
   mutate(percent = n / sum(n))
@@ -797,8 +800,11 @@ par(p)
 ```
 
 ```{r}
-write.csv(ebird_habitat,'../data/processed/ebird_habitat.csv')
-write.csv(ebird_ss,'../data/processed/ebird_ss.csv')
+write.csv(ebird_habitat,'../data/processed/ebird_habitat.csv', row.names=FALSE)
+head(ebird_habitat)
+write.csv(ebird_ss,'../data/processed/ebird_ss.csv', row.names=FALSE)
+head(ebird_ss)
+
 ```
 
 ## 4.4 Random Forest
@@ -827,8 +833,8 @@ detection_freq
 # ranger requires a factor response to do classification
 ebird_split$train$species_observed <- factor(ebird_split$train$species_observed)
 head(ebird_split)
-write.csv(ebird_split$train, "../data/processed/ebird_split_train.csv", na = "")
-write.csv(ebird_split$test, "../data/processed/ebird_split_test.csv", na = "")
+write.csv(ebird_split$train, "../data/processed/ebird_split_train.csv", na = "", row.names=FALSE)
+write.csv(ebird_split$test, "../data/processed/ebird_split_test.csv", na = "", row.names=FALSE)
 
 # grow random forest
 rf <- ranger(formula =  species_observed ~ ., 
