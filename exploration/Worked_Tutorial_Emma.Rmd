@@ -166,12 +166,10 @@ if (!file.exists(f_ebd)) {
 # if (!file.exists(f_ebd)) {
 #   auk_filter(ebd_filters, file = f_ebd)
 # }
-
 ```
 
 ```{r}
 ebd_zf <- auk_zerofill(f_ebd, f_sampling, collapse = TRUE)
-# ebd_zf <- read_ebd(f_ebd)
 ebd_zf
 ```
 
@@ -277,16 +275,16 @@ plot(st_geometry(ebird_sf),
      add = TRUE)
 # observed
 plot(filter(ebird_sf, species_observed) %>% st_geometry(),
-     pch = 19, cex = 0.3, col = alpha("#4daf4a", 1),
+     pch = 19, cex = 0.3, col = alpha("#c41e3a", 1),
      add = TRUE)
 # legend
 legend("bottomright", bty = "n",
-       col = c("#555555", "#4daf4a"),
+       col = c("#555555", "#c41e3a"),
        legend = c("eBird checklists", "Northern Cardinal sightings"),
        pch = 19)
 box()
 par(new = TRUE, mar = c(0, 0, 3, 0))
-title("Northern eBird Observations\nJune 2010-2020, BCR 22")
+title("Northern Cardinal eBird Observations\nJune 2010-2020, BCR 22")
 ```
 
 ```{r}
@@ -521,6 +519,25 @@ par(mar = c(0.25, 0.25, 2, 0.25))
 t <- str_glue("Proportion of Deciduous Broadleaf Forest\n",
               "{max_lc_year} MODIS Landcover")
 plot(forest_cover, axes = FALSE, box = FALSE, col = viridis(10), main = t)
+```
+
+```{r}
+grassland_cover <- pland_coords %>% 
+  # convert to spatial features
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>% 
+  st_transform(crs = projection(r)) %>% 
+  # rasterize points
+  rasterize(r, field = "pland_10_grassland ") %>% 
+  # project to albers equal-area for mapping
+  projectRaster(crs = st_crs(102003)$proj4string, method = "ngb") %>% 
+  # trim off empty edges of raster
+  trim()
+
+# make a map
+par(mar = c(0.25, 0.25, 2, 0.25))
+t <- str_glue("Proportion of Grassland\n",
+              "{max_lc_year} MODIS Landcover")
+plot(grassland_cover, axes = FALSE, box = FALSE, col = viridis(10), main = t)
 ```
 
 ```{r}
@@ -781,11 +798,11 @@ for (i in seq_along(both_pts)) {
        add = TRUE)
   # observed
   plot(filter(both_pts[[i]], species_observed) %>% st_geometry(),
-       pch = 19, cex = 0.3, col = alpha("#4daf4a", 0.5),
+       pch = 19, cex = 0.3, col = alpha("#c41e3a", 0.5),
        add = TRUE)
   # legend
   legend("bottomright", bty = "n",
-         col = c("#555555", "#4daf4a"),
+         col = c("#555555", "#c41e3a"),
          legend = c("Non-detection", "Detection"),
          pch = 19)
   box()

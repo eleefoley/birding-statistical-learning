@@ -14,7 +14,8 @@ library(dplyr)
 library(ggplot2)
 library(tidyverse)
 library(lubridate)
-
+library(ModelMetrics)
+library(broom)
 ```
 ```{r}
 nrow(ebird)
@@ -122,22 +123,30 @@ y_pred <- predict(classifier, newdata = select(test, -species_observed))
 head(y_pred)
 y_prob <- predict(classifier_prob, newdata = select(test, -species_observed),type = "response", probability = TRUE) 
 names(y_prob)
+int_y_pred <- as.integer(as.logical(y_pred))
 
 # Making the Confusion Matrix 
-nrow(y_pred)
+nrow(int_y_pred)
 nrow(test$species_observed)
-confusion_matrix <- table(test$species_observed, y_pred) 
+confusion_matrix <- confusionMatrix(test$species_observed, int_y_pred) 
 confusion_matrix
 ```
-
+Mean Squared Error of the prediction
 ```{r}
-3298/(3298+ 2108)
+mse(test$species_observed, int_y_pred)
+```
+```{r}
+sensitivity(test$species_observed, int_y_pred)
+```
+```{r}
+specificity(test$species_observed, int_y_pred)
+
 ```
 
-```{r}
-3495/(3495+1235)
-```
 
+```{r}
+r2 = R2(test$species_observed, int_y_pred, form = "traditional")
+```
 ## Tune to determine the optimal cost parameter
 
 ```{r}
@@ -164,49 +173,6 @@ summary(tune.out)
 #                  cost = 5)
 # best_linear_svm
 # summary(best_linear_svm)
-```
-
-# Use rminer instead of e1071 to get variable importance out
-```{r}
-# library(rminer)
-# 
-# svm_prob_fit <- fit(x = species_observed ~ ., data = train, model = "svm", task = "prob")
-# svm_imp <- Importance(svm_prob_fit, data = train)
-# summary(svm_prob_fit)
-# svm_prob_fit
-# svm_imp
-# best_linear_svm <- svm(formula = species_observed ~ ., 
-#                  data = train, 
-#                  type = 'C-classification', 
-#                  kernel = 'linear',
-#                  cost = 5)
-
-```
-
-# ```{r}
-# library(ModelMetrics)
-# train_svm_predict <- predict(svm_prob_fit, newdata = select(train, -c(1)))
-# train_svm_predict
-# # svm_predict_prob <- predict(best_linear_svm, newdata = select(test, -c(1)),probability = TRUE, type = "response")
-# # best_svm_predict$predictions[,2]
-# # best_svm_predict.decision_function(newdata = select(test, -c(1)))
-# test_svm_predict <- predict(svm_prob_fit, select(test, -species_observed))
-# test_svm_predict
-# 
-# # train_cf <- table(train$species_observed, train_svm_predict)
-# train_cf <- confusionMatrix(train$species_observed, train_svm_predict)
-# train_cf
-# 
-# test_cf <- confusionMatrix(test$species_observed, test_svm_predict)
-# test_cf
-# 
-# 
-# confusion_matrix <- confusionMatrix(confusion_matrix)
-# confusion_matrix
-# ```
-
-```{r}
-# best_linear_svm$coefs
 ```
 
 ```{r}
@@ -248,9 +214,10 @@ pred_svm <- predict(classifier_prob, data = pred_surface_eff, type = "response")
 pred_surface_eff <- sample_n(pred_surface_eff,8000)
 
 # add to prediction surface
-pred_er <- bind_cols(pred_surface_eff, encounter_rate = as.integer(pred_svm)) %>% 
+pred_er <- bind_cols(pred_surface_eff, encounter_rate = as.integer(as.logical(pred_svm))) %>% 
   select(latitude, longitude, encounter_rate) %>% 
   mutate(encounter_rate = pmin(pmax(encounter_rate, 0), 1))
+
 ```
 
 ```{r}
