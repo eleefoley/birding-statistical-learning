@@ -11,21 +11,83 @@ _Introduction to Statisitcal learning with Applications in R_, James, Witten, Ha
 library(caTools) 
 library(e1071)
 library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(lubridate)
+
+```
+```{r}
+nrow(ebird)
+```
+Split the data into test and train
+```{r}
+# library(Rpdb)
+set.seed(1)
+
+ebird_ss <- read.csv('../data/processed/ebird_ss.csv')
+ebird_split <- ebird_ss %>% 
+  # select only the columns to be used in the model
+  select(species_observed,
+         year, day_of_year,
+         time_observations_started, duration_minutes,
+         effort_distance_km, number_observers, 
+         starts_with("pland_"),
+         starts_with("elevation_")) %>% 
+  drop_na()
+
+# ebird_sample <- sample_n(ebird_split, 10000)
+# split 80/20
+ebird_split <- ebird_split %>% 
+  split(if_else(runif(nrow(.)) <= 0.8, "train", "test"))
+map_int(ebird_split, nrow)
 ```
 
+Remove some of the artifacts of splitting by saving as a tibble.  Sample down to a total of 10,000 rows, 80% in train and 20% in split
 ```{r}
-train <- read.csv('../data/processed/ebird_split_train.csv')
-train <- train %>% select(-X)
-test <- read.csv('../data/processed/ebird_split_test.csv')
+# train <- read.csv('../data/processed/ebird_split_train.csv')
+train <- tibble(ebird_split$train)
+nrow(train)
+train <- sample_n(train, 8000)
+nrow(train)
+train %>% group_by(species_observed) %>% count()
+
+# train <- train %>% select(-X)
+# test <- read.csv('../data/processed/ebird_split_test.csv')
+test <- tibble(ebird_split$test)
+nrow(test)
+test <- sample_n(test, 2000)
+nrow(test)
+test %>% group_by(species_observed) %>% count()
 # test <- test %>% select(-X)
 names(train)
-train[2]
+typeof(test$species_observed)
+
+test %>% group_by(species_observed) %>% count()
+
+train %>% group_by(species_observed) %>% count()
+
+```
+
+Drop a feature that has only two values in it.  All zeros caused a problem for SVM.
+```{r}
+train <- train %>% select(-pland_01_evergreen_needleleaf)
+test <- test %>% select(-pland_01_evergreen_needleleaf)
+```
+
+
+Ensure there are now rows with null values
+```{r}
+names(train)
+
+train %>% filter_all(any_vars(is.na(.)))
+train %>% filter_all(any_vars(is.na(.)))
+
 ```
 
 # Scaling features
 ```{r}
 # Feature Scaling 
-train
+# train
 train <- train %>% mutate_at(-c(1), scale)
 test <- test %>% mutate_at(-c(1), scale)
 ```
@@ -33,27 +95,37 @@ test <- test %>% mutate_at(-c(1), scale)
 # Linear svm
 ## Cost of 1
 ```{r}
-classifier <- svm(formula = species_observed ~ ., 
-                 data = train, 
-                 type = 'C-classification', 
-                 kernel = 'linear')
+
+classifier <- svm(formula = species_observed ~ .,
+                 data = train,
+                 type = 'C-classification',
+                 kernel = 'linear',
+                 cost = 5)
+classifier_prob <- svm(formula = species_observed ~ .,
+                 data = train,
+                 type = 'C-classification',
+                 kernel = 'linear',
+                 cost = 5,
+                 probability = TRUE)
+
 classifier
 ```
+
 ```{r}
-summary(classifier)
+summary(classifier_prob)
 ```
 ```{r}
 select(test, -c(1))
 
 classifier
-y_pred <- predict(classifier, newdata = select(test, -c(1))) 
+y_pred <- predict(classifier, newdata = select(test, -species_observed)) 
 head(y_pred)
+y_prob <- predict(classifier_prob, newdata = select(test, -species_observed),type = "response", probability = TRUE) 
+names(y_prob)
 
-names(test[, 3])
 # Making the Confusion Matrix 
 nrow(y_pred)
 nrow(test$species_observed)
-
 confusion_matrix <- table(test$species_observed, y_pred) 
 confusion_matrix
 ```
@@ -69,10 +141,175 @@ confusion_matrix
 ## Tune to determine the optimal cost parameter
 
 ```{r}
-set.sed(1)
-tune.out = tune(svm, formula = species_observed ~ ., 
-                 data = train, 
-                 type = 'C-classification', 
-                 kernel = 'linear',
-                ranges = list(cost = c(.001,)))
+train
+# tune.out <- tune(svm, species_observed ~ ., 
+#                  data = train, 
+#                  type = 'C-classification', 
+#                  kernel = 'linear',
+#                 # ranges = list(cost = c(.001,.01,.1,1,5,10,100)))
+#                 # ranges = list(cost = c(.1,1,5,10)))
+#                 ranges = list(cost = c(.1,1,5)))
+```
+
+```{r}
+summary(tune.out)
+```
+
+```{r}
+# best_linear_svm <- tune.out$best.model
+# best_linear_svm <- svm(formula = species_observed ~ ., 
+#                  data = train, 
+#                  type = 'C-classification', 
+#                  kernel = 'linear',
+#                  cost = 5)
+# best_linear_svm
+# summary(best_linear_svm)
+```
+
+# Use rminer instead of e1071 to get variable importance out
+```{r}
+# library(rminer)
+# 
+# svm_prob_fit <- fit(x = species_observed ~ ., data = train, model = "svm", task = "prob")
+# svm_imp <- Importance(svm_prob_fit, data = train)
+# summary(svm_prob_fit)
+# svm_prob_fit
+# svm_imp
+# best_linear_svm <- svm(formula = species_observed ~ ., 
+#                  data = train, 
+#                  type = 'C-classification', 
+#                  kernel = 'linear',
+#                  cost = 5)
+
+```
+
+# ```{r}
+# library(ModelMetrics)
+# train_svm_predict <- predict(svm_prob_fit, newdata = select(train, -c(1)))
+# train_svm_predict
+# # svm_predict_prob <- predict(best_linear_svm, newdata = select(test, -c(1)),probability = TRUE, type = "response")
+# # best_svm_predict$predictions[,2]
+# # best_svm_predict.decision_function(newdata = select(test, -c(1)))
+# test_svm_predict <- predict(svm_prob_fit, select(test, -species_observed))
+# test_svm_predict
+# 
+# # train_cf <- table(train$species_observed, train_svm_predict)
+# train_cf <- confusionMatrix(train$species_observed, train_svm_predict)
+# train_cf
+# 
+# test_cf <- confusionMatrix(test$species_observed, test_svm_predict)
+# test_cf
+# 
+# 
+# confusion_matrix <- confusionMatrix(confusion_matrix)
+# confusion_matrix
+# ```
+
+```{r}
+# best_linear_svm$coefs
+```
+
+```{r}
+library(sf)
+library(raster)
+library(MODIS)
+library(exactextractr)
+library(viridis)
+library(tidyverse)
+library(lubridate)
+library(ebirdst)
+library(fields)
+```
+
+```{r}
+t_peak <- 5.085106
+pred_surface <- read_csv('../data/processed/pland-elev_prediction-surface.csv')
+pred_surface_eff <- pred_surface %>% 
+  mutate(observation_date = ymd(str_glue("{max_lc_year}-06-15")),
+         year = year(observation_date),
+         day_of_year = yday(observation_date),
+         time_observations_started = t_peak,
+         duration_minutes = 60,
+         effort_distance_km = 1,
+         number_observers = 1)
+```
+
+```{r}
+# predict
+pred_svm <- predict(classifier_prob, data = pred_surface_eff, type = "response")
+
+# # apply calibration models
+# pred_svm <- pred_svm$predictions[, 2]
+# apply calibration models
+# pred_rf_cal <- predict(best_linear_svm,
+#                        data.frame(pred = pred_svm),
+#                        type = "response")
+
+pred_surface_eff <- sample_n(pred_surface_eff,8000)
+
+# add to prediction surface
+pred_er <- bind_cols(pred_surface_eff, encounter_rate = as.integer(pred_svm)) %>% 
+  select(latitude, longitude, encounter_rate) %>% 
+  mutate(encounter_rate = pmin(pmax(encounter_rate, 0), 1))
+```
+
+```{r}
+r_pred <- pred_er %>% 
+  # convert to spatial features
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>% 
+  st_transform(crs = projection(r)) %>% 
+  # rasterize
+  rasterize(r)
+r_pred <- r_pred[[-1]]
+
+# save the raster
+tif_dir <- "../output"
+if (!dir.exists(tif_dir)) {
+  dir.create(tif_dir)
+}
+writeRaster(r_pred, file.path(tif_dir, "svm-model_encounter-rate_cardinal.tif"), 
+            overwrite = TRUE)
+```
+
+Finally, we can map these predictions!
+```{r}
+# project predictions
+r_pred_proj <- projectRaster(r_pred, crs = map_proj$proj4string, method = "ngb")
+
+par(mar = c(3.5, 0.25, 0.25, 0.25))
+# set up plot area
+plot(bcr, col = NA, border = NA)
+plot(ne_land, col = "#dddddd", border = "#888888", lwd = 0.5, add = TRUE)
+
+# encounter rate
+r_max <- ceiling(10 * cellStats(r_pred_proj, max)) / 10
+brks <- seq(0, r_max[2], by = 0.025) 
+lbl_brks <- seq(0, r_max[2], by = 0.1)
+# ebird status and trends color palette
+pal <- abundance_palette(length(brks) - 1)
+plot(r_pred_proj, 
+     col = pal, breaks = brks, 
+     maxpixels = ncell(r_pred_proj),
+     legend = FALSE, add = TRUE)
+
+# borders
+plot(bcr, border = "#000000", col = NA, lwd = 1, add = TRUE)
+plot(ne_state_lines, col = "#ffffff", lwd = 0.75, add = TRUE)
+plot(ne_country_lines, col = "#ffffff", lwd = 1.5, add = TRUE)
+box()
+
+# legend
+par(new = TRUE, mar = c(0, 0, 0, 0))
+title <- "Northern Cardinal Encounter Rate Using SVM"
+image.plot(zlim = range(brks), legend.only = TRUE, 
+           col = pal, breaks = brks,
+           smallplot = c(0.25, 0.75, 0.06, 0.09),
+           horizontal = TRUE,
+           axis.args = list(at = lbl_brks, labels = lbl_brks,
+                            fg = "black", col.axis = "black",
+                            cex.axis = 0.75, lwd.ticks = 0.5,
+                            padj = -1.5),
+           legend.args = list(text = title,
+                              side = 3, col = "black",
+                              cex = 1, line = 0))
 ```

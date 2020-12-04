@@ -62,6 +62,7 @@ data/raw/ebd/*.gz
 data/raw/*.pdf
 data/raw/ebd_*
 data/raw/modis/*.tif
+data/processed/.~lock.*
 =======
 >>>>>>> 8ddaf72676f352482826582b05ee6c0209c69ffa
 =======
