@@ -6,18 +6,38 @@ output: html_document
 ---
 
 
-remotes::install_github("mstrimas/ebppackages")
 
-install.packages(c("dggridR","lubridate","ranger","scam","PresenceAbsence","verification","ebirdst","fields","auk","lubridate","raster","MODIS","exactextractr","viridis","tidyverse","sf","rnaturalearth","dplyr","rgdal","xfun"))
+
+
 ```{r}
 # libraries
-#library(c("lubridate","ranger","scam","PresenceAbsence","verification","ebirdst","fields","auk","lubridate","raster","MODIS","exactextractr","viridis","tidyverse","sf","rnaturalearth","dplyr","rgdal","xfun"))
-```
-
-```{r}
+remotes::install_github("mstrimas/ebppackages")
+install.packages(c("lubridate","ranger","scam","PresenceAbsence","verification","ebirdst","fields","auk","raster","MODIS","exactextractr","viridis","tidyverse","sf","rnaturalearth","dplyr","rgdal","xfun","lemon"))
 library(sf)
 library(rnaturalearth)
 library(dplyr)
+library(auk)
+library(lubridate)
+library(gridExtra)
+library(tidyverse)
+library(raster)
+library(MODIS)
+library(exactextractr)
+library(viridis)
+library(ranger)
+library(scam)
+library(PresenceAbsence)
+library(verification)
+library(ebirdst)
+library(fields)
+library(neuralnet)
+library(rgdal)
+library(xfun)
+library(lemon)
+```
+
+```{r}
+
 gpkg_dir <- "../data/raw"
 if (!dir.exists(gpkg_dir)) {
   dir.create(gpkg_dir)
@@ -70,13 +90,8 @@ write_sf(ne_state_lines, f_ne, "ne_state_lines")
 write_sf(bcr, f_ne, "bcr")
 ```
 
-
-
 ```{r}
-library(auk)
-library(lubridate)
-library(gridExtra)
-library(tidyverse)
+
 ebd <- auk_ebd("../data/raw/ebd_US-IL_norcar_relSep-2020.txt")
 
 # filters
@@ -389,12 +404,7 @@ grid.arrange(g_obs_hist, g_obs_freq)
 
 
 ```{r}
-library(sf)
-library(raster)
-library(MODIS)
-library(exactextractr)
-library(viridis)
-library(tidyverse)
+
 # resolve namespace conflicts
 select <- dplyr::select
 map <- purrr::map
@@ -655,9 +665,8 @@ write_csv(pland_elev_pred, "../data/processed/pland-elev_prediction-surface.csv"
 ```
 
 
-
-
 ```{r}
+set.seed(1)
 library(sf)
 library(raster)
 library(lubridate)
@@ -675,7 +684,7 @@ map <- purrr::map
 projection <- raster::projection
 
 # set random number seed to insure fully repeatable results
-set.seed(1)
+
 
 # setup output directory for saved results
 if (!dir.exists("output")) {
@@ -722,6 +731,24 @@ ebird_split_test <- ebird_split_test[,-1]
 head(ebird_split_train)
 head(ebird_split_test)
 
+# reduce sample size for low runtime.
+
+library(caret)
+table(ebird_split_train$species_observed)
+dpart <- createDataPartition(ebird_split_train$species_observed, p = 0.2, list = F)
+ebird_split_train <- ebird_split_train[dpart,]
+table(ebird_split_train$species_observed)
+
+table(ebird_split_test$species_observed)
+dpart <- createDataPartition(ebird_split_test$species_observed, p = 0.2, list = F)
+ebird_split_test <- ebird_split_test[dpart,]
+table(ebird_split_test$species_observed)
+
+# table(ebird_split_train$species_observed)
+# ebird_split_train <- sample_n(ebird_split_train, 8000)
+# ebird_split_test <- sample_n(ebird_split_test, 2000)
+# table(ebird_split_train$species_observed)
+
 detection_freq <- mean(ebird_split_train$species_observed)
 # grow random forest
 rf <- ranger(formula =  species_observed ~ ., 
@@ -730,6 +757,7 @@ rf <- ranger(formula =  species_observed ~ .,
              probability = TRUE,
              replace = TRUE)
 rf
+
 ```
 
 # Calibration
@@ -745,7 +773,7 @@ rf_pred_train <- tibble(obs = occ_obs, pred = occ_pred) %>%
   drop_na()
 
 # fit calibration model
-calibration_model <- scam(obs ~ s(pred, k = 5, bs = "mpi"), 
+calibration_model <- scam(obs ~ s(pred, k = 5, bs = "mpi"),
                           gamma = 1.4,
                           data = rf_pred_train)
 
@@ -781,10 +809,10 @@ p_fitted <- predict(rf, data = ebird_split_test, type = "response")
 # extract probability of detection
 p_fitted <- p_fitted$predictions[, 2]
 # calibrate
-p_calibrated <- predict(calibration_model, 
-                        newdata = tibble(pred = p_fitted), 
+p_calibrated <- predict(calibration_model,
+                        newdata = tibble(pred = p_fitted),
                         type = "response")
-rf_pred_test <- data.frame(id = seq_along(p_calibrated),
+rf_pred_test <- data.frame(id = seq_along(p_fitted),
                            # actual detection/non-detection
                            obs = ebird_split_test$species_observed,
                            # uncalibrated prediction
@@ -792,7 +820,7 @@ rf_pred_test <- data.frame(id = seq_along(p_calibrated),
                            # calibrated prediction
                            cal = p_calibrated) %>%
   # constrain probabilities to 0-1
-  mutate(cal = pmin(pmax(cal, 0), 1)) %>% 
+  mutate(cal = pmin(pmax(cal, 0), 1)) %>%
   drop_na()
 
 # mean squared error (mse)
@@ -808,10 +836,10 @@ metrics_fit <- rf_pred_test %>%
   presence.absence.accuracy(threshold = opt_thresh$fit, 
                             na.rm = TRUE, 
                             st.dev = FALSE)
-metrics_cal <- rf_pred_test %>% 
-  select(id, obs, cal) %>% 
-  presence.absence.accuracy(threshold = opt_thresh$cal, 
-                            na.rm = TRUE, 
+metrics_cal <- rf_pred_test %>%
+  select(id, obs, cal) %>%
+  presence.absence.accuracy(threshold = opt_thresh$cal,
+                            na.rm = TRUE,
                             st.dev = FALSE)
 
 rf_assessment <- tibble(
@@ -823,8 +851,11 @@ rf_assessment <- tibble(
   kappa = c(metrics_fit$Kappa, metrics_cal$Kappa)
 )
 knitr::kable(rf_assessment, digits = 3)
+p <- rf_pred_test$cal
+p[p>=0.5] = 1
+p[p<0.5] = 0
+confusionMatrix(as.factor(p),as.factor(as.numeric(ebird_split_test$species_observed)))
 ```
-
 
 
 ```{r}
@@ -841,6 +872,7 @@ ggplot(pi) +
   theme_minimal() +
   theme(panel.grid = element_blank(),
         panel.grid.major.x = element_line(colour = "#cccccc", size = 0.5))
+
 
 # top 9 predictors other than date
 top_pred <- pi %>% 
@@ -964,10 +996,14 @@ t_peak <- pd_time %>%
   top_n(1, wt = desc(time_observations_started)) %>% 
   pull(time_observations_started)
 t_peak
-#> [1] 5.07
 ```
 
 ```{r}
+
+
+#####################################################################################
+
+
 # add effort covariates to prediction 
 pred_surface_eff <- pred_surface %>% 
   mutate(observation_date = ymd(str_glue("{max_lc_year}-06-15")),
@@ -1048,6 +1084,155 @@ image.plot(zlim = range(brks), legend.only = TRUE,
            legend.args = list(text = title,
                               side = 3, col = "black",
                               cex = 1, line = 0))
+
+```
+
+
+# artificial neural network
+
+```{r}
+# scaled train data
+ebird_train_scaled <- ebird_split_train
+ebird_train_scaled <- as.data.frame(scale(ebird_train_scaled[,!names(ebird_train_scaled) %in% c("species_observed","pland_01_evergreen_needleleaf")]))
+
+ebird_train_scaled$species_observed <- as.numeric(ebird_split_train[,names(ebird_split_train) %in% c("species_observed")])
+
+ebird_train_scaled$pland_01_evergreen_needleleaf <- as.numeric(ebird_split_train[,names(ebird_split_train) %in% c("pland_01_evergreen_needleleaf")])
+
+
+# scaled test data
+ebird_test_scaled <- ebird_split_test
+ebird_test_scaled <- as.data.frame(scale(ebird_test_scaled[,!names(ebird_test_scaled) %in% c("species_observed","pland_01_evergreen_needleleaf")]))
+
+ebird_test_scaled$species_observed <- as.numeric(ebird_split_test[,names(ebird_split_test) %in% c("species_observed")])
+
+ebird_test_scaled$pland_01_evergreen_needleleaf <- as.numeric(ebird_split_test[,names(ebird_split_test) %in% c("pland_01_evergreen_needleleaf")])
+
+
+# ebird_split_train
+# ebird_split_test
+
+# utility function
+library(neuralnet)
+n <- names(ebird_train_scaled)
+f <- as.formula(paste("species_observed ~", paste(n[!n %in% "species_observed"], collapse = " + ")))
+nn <- neuralnet(f,data=ebird_train_scaled,hidden=2,linear.output=FALSE, likelihood = TRUE,err.fct = 'ce', threshold = 0.1)
+
+# save plot
+
+plot(nn)
+dev.copy(jpeg,filename="../output/nn_plot.jpg",width = 1000)
+dev.off ()
+
+pr.nn <- compute(nn,ebird_test_scaled[,!names(ebird_test_scaled)%in%"species_observed"])
+pr.nn_ <- pr.nn$net.result*(max(ebird_train_scaled$species_observed)-min(ebird_train_scaled$species_observed))+min(ebird_train_scaled$species_observed)
+test.r <- (ebird_test_scaled$species_observed)
+MSE.nn <- sum((test.r - pr.nn_)^2)/nrow(ebird_test_scaled)
+
+Predictions <- pr.nn_
+pr.nn_[pr.nn_ < 0.5] = 0
+pr.nn_[pr.nn_ >= 0.5] = 1
+MSE.nn
+confusionMatrix(as.factor(pr.nn_), as.factor(ebird_test_scaled$species_observed))
+```
+
+```{r}
+library(NeuralNetTools)
+garson(nn) + coord_flip()
+```
+
+```{r}
+imp_var <- garson(nn)$data
+imp_var <- imp_var[order(imp_var$rel_imp,decreasing = T),]
+imp_var[1:10,]
+```
+
+```{r}
+# add effort covariates to prediction 
+pred_surface_eff <- pred_surface %>% 
+  mutate(observation_date = ymd(str_glue("{max_lc_year}-06-15")),
+         year = year(observation_date),
+         day_of_year = yday(observation_date),
+         time_observations_started = t_peak,
+         duration_minutes = 60,
+         effort_distance_km = 1,
+         number_observers = 1)
+
+preProcValues <- preProcess(pred_surface_eff, method = c("center", "scale"))
+
+trainTransformed <- predict(preProcValues, pred_surface_eff)
+
+# predict
+pred_nn <- predict(nn, newdata = trainTransformed, type = "response")
+# pred_rf <- pred_rf$predictions[, 2]
+# apply calibration models
+# pred_rf_cal <- predict(calibration_model,
+#                        data.frame(pred = pred_rf),
+#                        type = "response")
+# add to prediction surface
+pred_er <- bind_cols(pred_surface_eff, encounter_rate = pred_nn) %>% 
+  select(latitude, longitude, encounter_rate) %>% 
+  mutate(encounter_rate = pmin(pmax(encounter_rate, 0), 1))
+
+
+r_pred <- pred_er %>% 
+  # convert to spatial features
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>% 
+  st_transform(crs = projection(r)) %>% 
+  # rasterize
+  rasterize(r)
+r_pred <- r_pred[[-1]]
+
+# save the raster
+tif_dir <- "output"
+if (!dir.exists(tif_dir)) {
+  dir.create(tif_dir)
+}
+writeRaster(r_pred, file.path(tif_dir, "nn-model_encounter-rate_cardinal.tif"), 
+            overwrite = TRUE)
+```
+
+```{r}
+# project predictions
+r_pred_proj <- projectRaster(r_pred, crs = map_proj$proj4string, method = "ngb")
+
+par(mar = c(3.5, 0.25, 0.25, 0.25))
+# set up plot area
+plot(bcr, col = NA, border = NA)
+plot(ne_land, col = "#dddddd", border = "#888888", lwd = 0.5, add = TRUE)
+
+# encounter rate
+r_max <- ceiling(10 * cellStats(r_pred_proj, max)) / 10
+brks <- seq(0, r_max, by = 0.025)
+lbl_brks <- seq(0, r_max, by = 0.1)
+# ebird status and trends color palette
+pal <- abundance_palette(length(brks) - 1)
+plot(r_pred_proj, 
+     col = pal, breaks = brks, 
+     maxpixels = ncell(r_pred_proj),
+     legend = FALSE, add = TRUE)
+
+# borders
+plot(bcr, border = "#000000", col = NA, lwd = 1, add = TRUE)
+plot(ne_state_lines, col = "#ffffff", lwd = 0.75, add = TRUE)
+plot(ne_country_lines, col = "#ffffff", lwd = 1.5, add = TRUE)
+box()
+
+# legend
+par(new = TRUE, mar = c(0, 0, 0, 0))
+title <- "Cardinal Encounter Rate"
+image.plot(zlim = range(brks), legend.only = TRUE, 
+           col = pal, breaks = brks,
+           smallplot = c(0.25, 0.75, 0.06, 0.09),
+           horizontal = TRUE,
+           axis.args = list(at = lbl_brks, labels = lbl_brks,
+                            fg = "black", col.axis = "black",
+                            cex.axis = 0.75, lwd.ticks = 0.5,
+                            padj = -1.5),
+           legend.args = list(text = title,
+                              side = 3, col = "black",
+                              cex = 1, line = 0))
+
 ```
 
 
