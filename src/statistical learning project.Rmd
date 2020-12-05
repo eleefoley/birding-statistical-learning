@@ -1,0 +1,1238 @@
+---
+title: "statistical learning project"
+author: "Arjuna Anilkumar, A20446963"
+date: "11/12/2020"
+output: html_document
+---
+
+
+
+
+
+```{r}
+# libraries
+remotes::install_github("mstrimas/ebppackages")
+install.packages(c("lubridate","ranger","scam","PresenceAbsence","verification","ebirdst","fields","auk","raster","MODIS","exactextractr","viridis","tidyverse","sf","rnaturalearth","dplyr","rgdal","xfun","lemon"))
+library(sf)
+library(rnaturalearth)
+library(dplyr)
+library(auk)
+library(lubridate)
+library(gridExtra)
+library(tidyverse)
+library(raster)
+library(MODIS)
+library(exactextractr)
+library(viridis)
+library(ranger)
+library(scam)
+library(PresenceAbsence)
+library(verification)
+library(ebirdst)
+library(fields)
+library(neuralnet)
+library(rgdal)
+library(xfun)
+library(lemon)
+```
+
+```{r}
+
+gpkg_dir <- "../data/raw"
+if (!dir.exists(gpkg_dir)) {
+  dir.create(gpkg_dir)
+}
+f_ne <- file.path(gpkg_dir, "gis-data.gpkg")
+
+tmp_dir <- normalizePath("C:\\Users\\arjun\\OneDrive\\MATH 569\\Project\\birding-statistical-learning\\data\\raw\\BCR\\")
+tmp_bcr <- normalizePath("C:\\Users\\arjun\\OneDrive\\MATH 569\\Project\\birding-statistical-learning\\data\\raw\\BCR\\bcr_terrestrial_shape.zip")
+paste0("https://www.birdscanada.org/download/gislab/bcr_terrestrial_shape.zip") %>% download.file(destfile = tmp_bcr)
+unzip(tmp_bcr, exdir = tmp_dir)
+bcr <- file.path(tmp_dir, "BCR_Terrestrial_master_International.shp") %>% 
+  read_sf() %>% 
+  select(bcr_code = BCR, bcr_name = LABEL) %>% 
+  filter(bcr_code == 22)
+
+# clean up
+list.files(tmp_dir, "bcr", ignore.case = TRUE, full.names = TRUE) %>% 
+  unlink()
+
+# political boundaries
+# land border with lakes removed
+ne_land <- ne_download(scale = 50, category = "cultural",
+                       type = "admin_0_countries_lakes",
+                       returnclass = "sf") %>%
+  filter(CONTINENT == "North America") %>%
+  st_set_precision(1e6) %>%
+  st_union()
+# country lines
+# downloaded globally then filtered to north america with st_intersect()
+ne_country_lines <- ne_download(scale = 50, category = "cultural",
+                                type = "admin_0_boundary_lines_land",
+                                returnclass = "sf") %>% 
+  st_geometry()
+ne_country_lines <- st_intersects(ne_country_lines, ne_land, sparse = FALSE) %>%
+  as.logical() %>%
+  {ne_country_lines[.]}
+# states, north america
+ne_state_lines <- ne_download(scale = 50, category = "cultural",
+                              type = "admin_1_states_provinces_lines",
+                              returnclass = "sf") %>%
+  filter(adm0_a3 %in% c("USA")) %>%
+  mutate(iso_a2 = recode(adm0_a3, USA = "US")) %>% 
+  select(country = adm0_name, country_code = iso_a2)
+
+# output
+unlink(f_ne)
+write_sf(ne_land, f_ne, "ne_land")
+write_sf(ne_country_lines, f_ne, "ne_country_lines")
+write_sf(ne_state_lines, f_ne, "ne_state_lines")
+write_sf(bcr, f_ne, "bcr")
+```
+
+```{r}
+
+ebd <- auk_ebd("../data/raw/ebd_US-IL_norcar_relSep-2020.txt")
+
+# filters
+ebd_filters <- ebd %>% 
+  auk_species("Northern Cardinal") %>% 
+  # southeastern coastal plain bcr
+  auk_bcr(bcr = 22) %>% 
+  # june, use * to get data from any year
+  auk_date(date = c("*-06-01", "*-06-30")) %>% 
+  # restrict to the standard traveling and stationary count protocols
+  auk_protocol(protocol = c("Stationary", "Traveling")) %>% 
+  auk_complete()
+ebd_filters
+
+
+data_dir <- "C:/Users/arjun/OneDrive/MATH 569/Project/birding-statistical-learning/data/raw"
+
+f_ebd <- file.path(data_dir, "ebd_cardinal_june_bcr22.txt")
+
+
+if (!file.exists(f_ebd)) {
+  auk_filter(ebd_filters, file = f_ebd)
+}
+```
+
+```{r}
+ebd_zf <- read_ebd(f_ebd, unique = TRUE, rollup = TRUE)
+
+time_to_decimal <- function(x) {
+  x <- hms(x, quiet = TRUE)
+  hour(x) + minute(x) / 60 + second(x) / 3600
+}
+
+ebd_zf <- ebd_zf %>% 
+  mutate(
+    # convert X to NA
+    observation_count = if_else(observation_count == "X", 
+                                NA_character_, observation_count),
+    observation_count = as.integer(observation_count),
+    # effort_distance_km to 0 for non-travelling counts
+    effort_distance_km = if_else(protocol_type != "Traveling", 
+                                 0, effort_distance_km),
+    # convert time to decimal hours since midnight
+    time_observations_started = time_to_decimal(time_observations_started),
+    # split date into year and day of year
+    year = year(observation_date),
+    day_of_year = yday(observation_date)
+  )
+
+ebd_zf_filtered <- ebd_zf %>% 
+  filter(
+    # effort filters
+    duration_minutes <= 5 * 60,
+    effort_distance_km <= 5,
+    # last 10 years of data
+    year >= 2010,
+    # 10 or fewer observers
+    number_observers <= 10)
+
+ebird <- ebd_zf_filtered %>% 
+  select(checklist_id, observer_id, sampling_event_identifier,
+         scientific_name,
+         observation_count, 
+         state_code, locality_id, latitude, longitude,
+         protocol_type, all_species_reported,
+         observation_date, year, day_of_year,
+         time_observations_started, 
+         duration_minutes, effort_distance_km,
+         number_observers)
+
+ebird <- ebird %>%
+  mutate(species_observed = case_when(observation_count >=1 ~ TRUE, TRUE ~ FALSE))
+
+write_csv(ebird, "../data/processed/ebd_cardinal_june_bcr22_zf.csv", na = "")
+```
+
+```{r}
+
+
+# load and project gis data
+new_vector = st_read(f_ne)
+
+map_proj <- st_crs(new_vector)
+ne_land <- read_sf(f_ne, "ne_land") %>% 
+  st_transform(crs = map_proj) %>% 
+  st_geometry()
+bcr <- read_sf(f_ne, "bcr") %>% 
+  st_transform(crs = map_proj) %>% 
+  st_geometry()
+ne_country_lines <- read_sf(f_ne, "ne_country_lines") %>% 
+  st_transform(crs = map_proj) %>% 
+  st_geometry()
+ne_state_lines <- read_sf(f_ne, "ne_state_lines") %>% 
+  st_transform(crs = map_proj) %>% 
+  st_geometry()
+
+# prepare ebird data for mapping
+ebird_sf <- ebird %>% 
+  # convert to spatial points
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>% 
+  st_transform(crs = map_proj) %>% 
+  select(species_observed)
+
+# map
+par(mar = c(0.25, 0.25, 0.25, 0.25))
+  # set up plot area
+plot(st_geometry(ebird_sf), col = NA)
+  # contextual gis data
+plot(ne_land, col = "#dddddd", border = "#888888", lwd = 0.5, add = TRUE)
+plot(bcr, col = "#cccccc", border = NA, add = TRUE)
+plot(ne_state_lines, col = "#ffffff", lwd = 0.75, add = TRUE)
+plot(ne_country_lines, col = "#ffffff", lwd = 1.5, add = TRUE)
+  # ebird observations
+    # not observed
+plot(st_geometry(ebird_sf),
+     pch = 19, cex = 0.1, col = alpha("#555555", 0.25),
+     add = TRUE)
+    # observed
+plot(filter(ebird_sf, species_observed) %>% st_geometry(),
+     pch = 19, cex = 0.3, col = alpha("#4daf4a", 1),
+     add = TRUE)
+  # legend
+legend("bottomright", bty = "n",
+       col = c("#555555", "#4daf4a"),
+       legend = c("eBird checklists", "cardinal sightings"),
+       pch = 19)
+box()
+par(new = TRUE, mar = c(0, 0, 3, 0))
+title("Cardinal eBird Observations\nJune 2010-2019, BCR 22")
+```
+
+# Time of day
+```{r}
+# summarize data by hourly bins
+breaks <- 0:24
+labels <- breaks[-length(breaks)] + diff(breaks) / 2
+ebird_tod <- ebird %>% 
+  mutate(tod_bins = cut(time_observations_started, 
+                        breaks = breaks, 
+                        labels = labels,
+                        include.lowest = TRUE),
+         tod_bins = as.numeric(as.character(tod_bins))) %>% 
+  group_by(tod_bins) %>% 
+  summarise(n_checklists = n(),
+            n_detected = sum(species_observed),
+            det_freq = mean(species_observed))
+
+# histogram
+g_tod_hist <- ggplot(ebird_tod) +
+  aes(x = tod_bins, y = n_checklists) +
+  geom_segment(aes(xend = tod_bins, y = 0, yend = n_checklists),
+               color = "grey50") +
+  geom_point() +
+  scale_x_continuous(breaks = seq(0, 24, by = 3), limits = c(0, 24)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = "Hours since midnight",
+       y = "# checklists",
+       title = "Distribution of observation start times")
+
+# frequency of detection
+g_tod_freq <- ggplot(ebird_tod %>% filter(n_checklists > 100)) +
+  aes(x = tod_bins, y = det_freq) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks = seq(0, 24, by = 3), limits = c(0, 24)) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Hours since midnight",
+       y = "% checklists with detections",
+       title = "Detection frequency")
+
+# combine
+grid.arrange(g_tod_hist, g_tod_freq)
+```
+
+# checklist duration
+
+```{r}
+# summarize data by 30 minute bins
+breaks <- seq(0, 5, by = 0.5)
+labels <- breaks[-length(breaks)] + diff(breaks) / 2
+ebird_dur <- ebird %>% 
+  mutate(dur_bins = cut(duration_minutes / 60, 
+                        breaks = breaks, 
+                        labels = labels,
+                        include.lowest = TRUE),
+         dur_bins = as.numeric(as.character(dur_bins))) %>% 
+  group_by(dur_bins) %>% 
+  summarise(n_checklists = n(),
+            n_detected = sum(species_observed),
+            det_freq = mean(species_observed))
+
+# histogram
+g_dur_hist <- ggplot(ebird_dur) +
+  aes(x = dur_bins, y = n_checklists) +
+  geom_segment(aes(xend = dur_bins, y = 0, yend = n_checklists),
+               color = "grey50") +
+  geom_point() +
+  scale_x_continuous(breaks = 0:5) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = "Checklist duration (hours)",
+       y = "# checklists",
+       title = "Distribution of checklist durations")
+
+# frequency of detection
+g_dur_freq <- ggplot(ebird_dur %>% filter(n_checklists > 100)) +
+  aes(x = dur_bins, y = det_freq) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks = 0:5) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Checklist duration (hours)",
+       y = "% checklists with detections",
+       title = "Detection frequency")
+
+# combine
+grid.arrange(g_dur_hist, g_dur_freq)
+```
+
+# Distance travelled
+
+```{r}
+# summarize data by 500m bins
+breaks <- seq(0, 5, by = 0.5)
+labels <- breaks[-length(breaks)] + diff(breaks) / 2
+ebird_dist <- ebird %>% 
+  mutate(dist_bins = cut(effort_distance_km, 
+                         breaks = breaks, 
+                         labels = labels,
+                         include.lowest = TRUE),
+         dist_bins = as.numeric(as.character(dist_bins))) %>% 
+  group_by(dist_bins) %>% 
+  summarise(n_checklists = n(),
+            n_detected = sum(species_observed),
+            det_freq = mean(species_observed))
+
+# histogram
+g_dist_hist <- ggplot(ebird_dist) +
+  aes(x = dist_bins, y = n_checklists) +
+  geom_segment(aes(xend = dist_bins, y = 0, yend = n_checklists),
+               color = "grey50") +
+  geom_point() +
+  scale_x_continuous(breaks = 0:5) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = "Distance travelled (km)",
+       y = "# checklists",
+       title = "Distribution of distance travelled")
+
+# frequency of detection
+g_dist_freq <- ggplot(ebird_dist %>% filter(n_checklists > 100)) +
+  aes(x = dist_bins, y = det_freq) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks = 0:5) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Distance travelled (km)",
+       y = "% checklists with detections",
+       title = "Detection frequency")
+
+# combine
+grid.arrange(g_dist_hist, g_dist_freq)
+```
+
+# No of observers
+
+```{r}
+# summarize data
+breaks <- 0:10
+labels <- 1:10
+ebird_obs <- ebird %>% 
+  mutate(obs_bins = cut(number_observers, 
+                        breaks = breaks, 
+                        label = labels,
+                        include.lowest = TRUE),
+         obs_bins = as.numeric(as.character(obs_bins))) %>% 
+  group_by(obs_bins) %>% 
+  summarise(n_checklists = n(),
+            n_detected = sum(species_observed),
+            det_freq = mean(species_observed))
+
+# histogram
+g_obs_hist <- ggplot(ebird_obs) +
+  aes(x = obs_bins, y = n_checklists) +
+  geom_segment(aes(xend = obs_bins, y = 0, yend = n_checklists),
+               color = "grey50") +
+  geom_point() +
+  scale_x_continuous(breaks = 1:10) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = "# observers",
+       y = "# checklists",
+       title = "Distribution of the number of observers")
+
+# frequency of detection
+g_obs_freq <- ggplot(ebird_obs) +
+  aes(x = obs_bins, y = det_freq) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks = 1:10) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "# observers",
+       y = "% checklists with detections",
+       title = "Detection frequency")
+
+# combine
+grid.arrange(g_obs_hist, g_obs_freq)
+```
+
+
+# modis data 
+
+
+
+```{r}
+
+# resolve namespace conflicts
+select <- dplyr::select
+map <- purrr::map
+projection <- raster::projection
+
+# bcr 22 boundary
+bcr <- read_sf("../data/raw/gis-data.gpkg", "bcr") %>% 
+  filter(bcr_code == 22) %>% 
+  # project to the native modis projection
+  st_transform(crs = paste("+proj=sinu +lon_0=0 +x_0=0 +y_0=0",
+                           "+a=6371007.181 +b=6371007.181 +units=m +no_defs"))
+# load ebird data
+ebird <- read_csv("../data/processed/ebd_cardinal_june_bcr22_zf.csv")
+# get list of tiles required to cover this bcr
+tiles <- getTile(bcr)
+tiles@tile
+```
+# MODIS setup
+```{r}
+MODIS:::checkTools("GDAL")
+MODIS::MODISoptions(gdalPath = "c:/OSGeo4W64/bin")
+```
+
+```{r}
+# earliest year of ebird data
+begin_year <- format(min(ebird$observation_date), "%Y.01.01")
+# end date for ebird data
+end_year <- format(max(ebird$observation_date), "%Y.12.31")
+# download tiles and combine into a single raster for each year
+tifs <- runGdal(product = "MCD12Q1", collection = "006", SDSstring = "01", 
+                extent = bcr %>% st_buffer(dist = 10000), 
+                begin = begin_year, end = end_year, 
+                outDirPath = "../data/raw",job = "modis",
+                MODISserverOrder = "LPDAAC")%>% 
+  pluck("MCD12Q1.006") %>% 
+  unlist()
+
+# rename tifs to have more descriptive names
+new_names <- format(as.Date(names(tifs)), "%Y") %>% 
+  sprintf("modis_mcd12q1_umd_%s.tif", .) %>% 
+  file.path(dirname(tifs), .)
+file.rename(tifs, new_names)
+```
+
+
+```{r}
+# load the landcover data
+landcover <- list.files("../data/raw/modis", "^modis_mcd12q1_umd", 
+                        full.names = TRUE) %>% 
+  stack()
+# label layers with year
+landcover <- names(landcover) %>% 
+  str_extract("(?<=modis_mcd12q1_umd_)[0-9]{4}") %>% 
+  paste0("y", .) %>% 
+  setNames(landcover, .)
+landcover
+
+max_lc_year <- names(landcover) %>% 
+  str_extract("[0-9]{4}") %>% 
+  as.integer() %>% 
+  max()
+
+neighborhood_radius <- 5 * ceiling(max(res(landcover))) / 2
+ebird_buff <- ebird %>% 
+  distinct(year = format(observation_date, "%Y"),
+           locality_id, latitude, longitude) %>% 
+  # for 2019 use 2018 landcover data
+  mutate(year_lc = if_else(as.integer(year) > max_lc_year, 
+                           as.character(max_lc_year), year),
+         year_lc = paste0("y", year_lc)) %>% 
+  # convert to spatial features
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>% 
+  # transform to modis projection
+  st_transform(crs = projection(landcover)) %>% 
+  # buffer to create neighborhood around each point
+  st_buffer(dist = neighborhood_radius) %>% 
+  # nest by year
+  nest(data = c(year, locality_id, geometry))
+
+
+calculate_pland <- function(yr, regions, lc) {
+  locs <- st_set_geometry(regions, NULL)
+  exact_extract(lc[[yr]], regions, progress = FALSE) %>% 
+    map(~ count(., landcover = value)) %>% 
+    tibble(locs, data = .) %>% 
+    unnest(data)
+}
+# iterate over all years extracting landcover for all checklists in each
+lc_extract <- ebird_buff %>% 
+  mutate(pland = map2(year_lc, data, calculate_pland, lc = landcover)) %>%
+  select(pland) %>% 
+  unnest(cols = pland)
+```
+
+```{r}
+pland <- lc_extract %>% 
+  # calculate proporiton
+  group_by(locality_id, year) %>% 
+  mutate(pland = n / sum(n)) %>% 
+  ungroup() %>% 
+  select(-n) %>% 
+  # remove NAs after tallying so pland is relative to total number of cells
+  filter(!is.na(landcover))
+
+
+# convert names to be more descriptive
+lc_names <- tibble(landcover = 0:15,
+                   lc_name = c("pland_00_water", 
+                               "pland_01_evergreen_needleleaf", 
+                               "pland_02_evergreen_broadleaf", 
+                               "pland_03_deciduous_needleleaf", 
+                               "pland_04_deciduous_broadleaf", 
+                               "pland_05_mixed_forest",
+                               "pland_06_closed_shrubland", 
+                               "pland_07_open_shrubland", 
+                               "pland_08_woody_savanna", 
+                               "pland_09_savanna", 
+                               "pland_10_grassland", 
+                               "pland_11_wetland", 
+                               "pland_12_cropland", 
+                               "pland_13_urban", 
+                               "pland_14_mosiac", 
+                               "pland_15_barren"))
+pland <- pland %>% 
+  inner_join(lc_names, by = "landcover") %>% 
+  arrange(landcover) %>% 
+  select(-landcover)%>% unique()
+
+# tranform to wide format, filling in implicit missing values with 0s%>% 
+pland <- pland %>% 
+  pivot_wider(names_from = lc_name, 
+              values_from = pland, 
+              values_fill = list(pland = 0))
+
+# save
+write_csv(pland, "../data/raw/modis_pland_location-year.csv")
+```
+
+# prediction surface
+
+```{r}
+agg_factor <- round(2 * neighborhood_radius / res(landcover))
+r <- raster(landcover) %>% 
+  aggregate(agg_factor) 
+r <- bcr %>% 
+  st_transform(crs = projection(r)) %>% 
+  rasterize(r, field = 1) %>% 
+  # remove any empty cells at edges
+  trim()
+r <- writeRaster(r, filename = "../data/raw/prediction-surface.tif", overwrite = TRUE)
+
+
+# get cell centers and create neighborhoods
+r_centers <- rasterToPoints(r, spatial = TRUE) %>% 
+  st_as_sf() %>% 
+  transmute(id = row_number())
+r_cells <- st_buffer(r_centers, dist = neighborhood_radius)
+
+# extract landcover values within neighborhoods, only needed most recent year
+lc_extract_pred <- landcover[[paste0("y", max_lc_year)]] %>% 
+  exact_extract(r_cells, progress = FALSE) %>% 
+  map(~ count(., landcover = value)) %>% 
+  tibble(id = r_cells$id, data = .) %>% 
+  unnest(data)
+
+# calculate the percent for each landcover class
+pland_pred <- lc_extract_pred %>% 
+  count(id, landcover) %>% 
+  group_by(id) %>% 
+  mutate(pland = n / sum(n)) %>% 
+  ungroup() %>% 
+  select(-n) %>% 
+  # remove NAs after tallying so pland is relative to total number of cells
+  filter(!is.na(landcover))
+
+# convert names to be more descriptive
+pland_pred <- pland_pred %>% 
+  inner_join(lc_names, by = "landcover") %>% 
+  arrange(landcover) %>% 
+  select(-landcover)
+
+# tranform to wide format, filling in implicit missing values with 0s
+pland_pred <- pland_pred %>% 
+  pivot_wider(names_from = lc_name, 
+              values_from = pland, 
+              values_fill = list(pland = 0)) %>% 
+  mutate(year = max_lc_year) %>% 
+  select(id, year, everything())
+
+# join in coordinates
+pland_coords <- st_transform(r_centers, crs = 4326) %>% 
+  st_coordinates() %>% 
+  as.data.frame() %>% 
+  cbind(id = r_centers$id, .) %>% 
+  rename(longitude = X, latitude = Y) %>% 
+  inner_join(pland_pred, by = "id")
+
+# plot 
+forest_cover <- pland_coords %>% 
+  # convert to spatial features
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>% 
+  st_transform(crs = projection(r)) %>% 
+  # rasterize points
+  rasterize(r, field = "pland_04_deciduous_broadleaf") %>% 
+  # project to albers equal-area for mapping
+  projectRaster(crs = st_crs(new_vector)$proj4string, method = "ngb") %>% 
+  # trim off empty edges of raster
+  trim()
+
+# make a map
+par(mar = c(0.25, 0.25, 2, 0.25))
+t <- str_glue("Proportion of Deciduous Broadleaf Forest\n",
+              "{max_lc_year} MODIS Landcover")
+plot(forest_cover, axes = FALSE, box = FALSE, col = viridis(10), main = t)
+```
+
+# Elevation
+
+```{r}
+elev <- raster("../data/raw/elevation_1KMmd_GMTEDmd.tif")
+# crop, buffer bcr by 10 km to provide a little wiggly room
+elev <- bcr %>% 
+  st_buffer(dist = 10000) %>% 
+  st_transform(crs = projection(elev)) %>% 
+  crop(elev, .) %>% 
+  projectRaster(crs = projection(landcover))
+
+# buffer each checklist location
+ebird_buff_noyear <- ebird %>% 
+  distinct(locality_id, latitude, longitude) %>% 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>% 
+  st_transform(crs = projection(elev)) %>% 
+  st_buffer(dist = neighborhood_radius)
+
+# extract elevation values and calculate median and sd
+locs <- st_set_geometry(ebird_buff_noyear, NULL) %>% 
+    mutate(id = row_number())
+elev_checklists <- exact_extract(elev, ebird_buff_noyear, progress = FALSE) %>% 
+  map_dfr(~ tibble(elevation_median = mean(.$value, na.rm = TRUE),
+                   elevation_sd = sd(.$value, na.rm = TRUE))) %>% 
+  # join to lookup table to get locality_id
+  bind_cols(locs, .)
+
+# extract and calculate median and sd
+elev_pred <- exact_extract(elev, r_cells, progress = FALSE) %>% 
+  map_dfr(~ tibble(elevation_median = mean(.$value, na.rm = TRUE),
+                   elevation_sd = sd(.$value, na.rm = TRUE))) %>% 
+  # join to lookup table to get locality_id
+  bind_cols(st_drop_geometry(r_cells), .)
+
+# checklist covariates
+pland_elev_checklist <- inner_join(pland, elev_checklists, by = "locality_id")
+write_csv(pland_elev_checklist, "../data/processed/pland-elev_location-year.csv")
+
+# prediction surface covariates
+pland_elev_pred <- inner_join(pland_coords, elev_pred, by = "id")
+write_csv(pland_elev_pred, "../data/processed/pland-elev_prediction-surface.csv")
+```
+
+
+```{r}
+set.seed(1)
+library(sf)
+library(raster)
+library(lubridate)
+library(ranger)
+library(scam)
+library(PresenceAbsence)
+library(verification)
+library(ebirdst)
+library(fields)
+library(gridExtra)
+library(tidyverse)
+
+select <- dplyr::select
+map <- purrr::map
+projection <- raster::projection
+
+# set random number seed to insure fully repeatable results
+
+
+# setup output directory for saved results
+if (!dir.exists("output")) {
+  dir.create("output")
+}
+
+# ebird data
+ebird <- read_csv("../data/processed/ebd_cardinal_june_bcr22_zf.csv") %>% 
+  # year required to join to habitat data
+  mutate(year = year(observation_date))
+
+# modis habitat covariates
+habitat <- read_csv("../data/processed/pland-elev_location-year.csv") %>% 
+  mutate(year = as.integer(year))
+
+# combine ebird and habitat data
+ebird_habitat <- inner_join(ebird, habitat, by = c("locality_id", "year"))
+
+# prediction surface
+pred_surface <- read_csv("../data/processed/pland-elev_prediction-surface.csv")
+# latest year of landcover data
+max_lc_year <- max(pred_surface$year)
+r <- raster("../data/raw/prediction-surface.tif")
+
+# load gis data for making maps
+map_proj <- st_crs(new_vector)
+ne_land <- read_sf("../data/raw/gis-data.gpkg", "ne_land") %>% 
+  st_transform(crs = map_proj) %>% 
+  st_geometry()
+bcr <- read_sf("../data/raw/gis-data.gpkg", "bcr") %>% 
+  st_transform(crs = map_proj) %>% 
+  st_geometry()
+ne_country_lines <- read_sf("../data/raw/gis-data.gpkg", "ne_country_lines") %>% 
+  st_transform(crs = map_proj) %>% 
+  st_geometry()
+ne_state_lines <- read_sf("../data/raw/gis-data.gpkg", "ne_state_lines") %>% 
+  st_transform(crs = map_proj) %>% 
+  st_geometry()
+
+ebird_split_train <- read.table("../data/processed/ebird_split_train.csv", sep = ",", header = T)
+ebird_split_train <- ebird_split_train[,-1]
+ebird_split_test <- read.table("../data/processed/ebird_split_test.csv", sep = ",", header = T)
+ebird_split_test <- ebird_split_test[,-1]
+head(ebird_split_train)
+head(ebird_split_test)
+
+# reduce sample size for low runtime.
+
+library(caret)
+table(ebird_split_train$species_observed)
+dpart <- createDataPartition(ebird_split_train$species_observed, p = 0.2, list = F)
+ebird_split_train <- ebird_split_train[dpart,]
+table(ebird_split_train$species_observed)
+
+table(ebird_split_test$species_observed)
+dpart <- createDataPartition(ebird_split_test$species_observed, p = 0.2, list = F)
+ebird_split_test <- ebird_split_test[dpart,]
+table(ebird_split_test$species_observed)
+
+# table(ebird_split_train$species_observed)
+# ebird_split_train <- sample_n(ebird_split_train, 8000)
+# ebird_split_test <- sample_n(ebird_split_test, 2000)
+# table(ebird_split_train$species_observed)
+
+detection_freq <- mean(ebird_split_train$species_observed)
+# grow random forest
+rf <- ranger(formula =  species_observed ~ ., 
+             data = ebird_split_train,
+             importance = "impurity",
+             probability = TRUE,
+             replace = TRUE)
+rf
+
+```
+
+# Calibration
+
+```{r}
+# make predictions on training data
+occ_pred <- rf$predictions[, 2]
+# convert the observered response back to a numeric value from factor
+occ_obs <- ebird_split_train$species_observed %>% 
+  as.logical() %>% 
+  as.integer()
+rf_pred_train <- tibble(obs = occ_obs, pred = occ_pred) %>% 
+  drop_na()
+
+# fit calibration model
+calibration_model <- scam(obs ~ s(pred, k = 5, bs = "mpi"),
+                          gamma = 1.4,
+                          data = rf_pred_train)
+
+# calculate the average observed encounter rates for different 
+# categories of estimated encounter rates 
+
+average_encounter <- rf_pred_train %>%
+  mutate(pred_cat = cut(rf_pred_train$pred, breaks = seq(0, 1, by=0.02))) %>%
+  group_by(pred_cat) %>%
+  summarise(pred = mean(pred), obs = mean(obs), checklist_count = n()) %>%
+  ungroup()
+
+# plot
+cal_pred <- tibble(pred = seq(0, 1, length.out = 100))
+cal_pred <- predict(calibration_model, cal_pred, type = "response") %>% 
+  bind_cols(cal_pred, calibrated = .)
+ggplot(cal_pred) +
+  aes(x = pred, y = calibrated) +
+  geom_line() +
+  geom_point(data = average_encounter, 
+             aes(x = pred, y = obs, size = sqrt(checklist_count)),
+             show.legend = FALSE, shape = 1) +
+  labs(x = "Estimated encounter rate",
+       y = "Observed encounter rate",
+       title = "Calibration model")
+```
+
+# Assessment
+
+```{r}
+# predict on test data using calibrated model
+p_fitted <- predict(rf, data = ebird_split_test, type = "response")
+# extract probability of detection
+p_fitted <- p_fitted$predictions[, 2]
+# calibrate
+p_calibrated <- predict(calibration_model,
+                        newdata = tibble(pred = p_fitted),
+                        type = "response")
+rf_pred_test <- data.frame(id = seq_along(p_fitted),
+                           # actual detection/non-detection
+                           obs = ebird_split_test$species_observed,
+                           # uncalibrated prediction
+                           fit = p_fitted,
+                           # calibrated prediction
+                           cal = p_calibrated) %>%
+  # constrain probabilities to 0-1
+  mutate(cal = pmin(pmax(cal, 0), 1)) %>%
+  drop_na()
+
+# mean squared error (mse)
+mse_fit <- mean((rf_pred_test$obs - rf_pred_test$fit)^2, na.rm = TRUE)
+mse_cal <- mean((rf_pred_test$obs - rf_pred_test$cal)^2, na.rm = TRUE)
+
+# pick threshold to maximize kappa
+opt_thresh <- optimal.thresholds(rf_pred_test, opt.methods = "MaxKappa")
+
+# calculate accuracy metrics: auc, kappa, sensitivity, specificity,
+metrics_fit <- rf_pred_test %>% 
+  select(id, obs, fit) %>% 
+  presence.absence.accuracy(threshold = opt_thresh$fit, 
+                            na.rm = TRUE, 
+                            st.dev = FALSE)
+metrics_cal <- rf_pred_test %>%
+  select(id, obs, cal) %>%
+  presence.absence.accuracy(threshold = opt_thresh$cal,
+                            na.rm = TRUE,
+                            st.dev = FALSE)
+
+rf_assessment <- tibble(
+  model = c("RF", "Calibrated RF"),
+  mse = c(mse_fit, mse_cal),
+  sensitivity = c(metrics_fit$sensitivity, metrics_cal$sensitivity),
+  specificity = c(metrics_fit$specificity, metrics_cal$specificity),
+  auc = c(metrics_fit$AUC, metrics_cal$AUC),
+  kappa = c(metrics_fit$Kappa, metrics_cal$Kappa)
+)
+knitr::kable(rf_assessment, digits = 3)
+p <- rf_pred_test$cal
+p[p>=0.5] = 1
+p[p<0.5] = 0
+confusionMatrix(as.factor(p),as.factor(as.numeric(ebird_split_test$species_observed)))
+```
+
+
+```{r}
+pi <- enframe(rf$variable.importance, "predictor", "importance")
+# plot
+ggplot(pi) + 
+  aes(x = fct_reorder(predictor, importance), y = importance) +
+  geom_col() +
+  geom_hline(yintercept = 0, size = 2, colour = "#555555") +
+  scale_y_continuous(expand = c(0, 0)) +
+  coord_flip() +
+  labs(x = NULL, 
+       y = "Predictor Importance (Gini Index)") +
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        panel.grid.major.x = element_line(colour = "#cccccc", size = 0.5))
+
+
+# top 9 predictors other than date
+top_pred <- pi %>% 
+  filter(!predictor %in% c("year", "day_of_year")) %>% 
+  top_n(n = 9, wt = importance) %>% 
+  arrange(desc(importance))
+```
+
+
+# Partial dependence
+
+```{r}
+# function to calculate partial dependence for a single predictor
+calculate_pd <- function(predictor, model, data, 
+                         x_res = 25, n = 1000) {
+  # create prediction grid
+  rng <- range(data[[predictor]], na.rm = TRUE)
+  x_grid <- seq(rng[1], rng[2], length.out = x_res)
+  grid <- data.frame(covariate = predictor, x = x_grid, 
+                     stringsAsFactors = FALSE)
+  names(grid) <- c("covariate", predictor)
+  
+  # subsample training data
+  n <- min(n, nrow(data))
+  s <- sample(seq.int(nrow(data)), size = n, replace = FALSE)
+  data <- data[s, ]
+  
+  # drop focal predictor from data
+  data <- data[names(data) != predictor]
+  grid <- merge(grid, data, all = TRUE)
+  
+  # predict
+  p <- predict(model, data = grid)
+  
+  # summarize
+  pd <- grid[, c("covariate", predictor)]
+  names(pd) <- c("covariate", "x")
+  pd$pred <- p$predictions[, 2]
+  pd <- dplyr::group_by(pd, covariate, x) %>% 
+    dplyr::summarise(pred = mean(pred, na.rm = TRUE)) %>% 
+    dplyr::ungroup()
+  
+  return(pd)
+}
+
+# calculate partial dependence for each predictor
+# map is used to iteratively apply calculate_pd to each predictor
+pd <- top_pred %>% 
+  mutate(pd = map(predictor, calculate_pd, model = rf, 
+                  data = ebird_split_train),
+         pd = map(pd, ~ .[, c(2, 3)]),
+         pd = map(pd, set_names, nm = c("value",  "encounter_rate"))) %>% 
+  unnest(cols = pd)
+
+# calibrate predictions
+pd$encounter_rate <- predict(calibration_model, 
+                             newdata = tibble(pred = pd$encounter_rate), 
+                             type = "response") %>% 
+  as.numeric()
+  
+# plot
+ggplot(pd) +
+  aes(x = value, y = encounter_rate) +
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent) +
+  facet_wrap(~ as_factor(predictor), nrow = 3, scales = "free") +
+  labs(x = NULL, y = "Encounter Rate") +
+  theme_minimal() +
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        axis.line = element_line(color = "grey60"),
+        axis.ticks  = element_line(color = "grey60"))
+```
+
+```{r}
+# find peak time of day from partial dependence
+pd_time <- calculate_pd("time_observations_started",
+                        model = rf, 
+                        data = ebird_split_train,
+                        # make estimates at 30 minute intervals
+                        # using a subset of the training dataset
+                        x_res = 2 * 24, n = 1000) %>% 
+  transmute(time_observations_started = x, encounter_rate = pred)
+
+# histogram
+g_hist <- ggplot(ebird_split_train) +
+  aes(x = time_observations_started) +
+  geom_histogram(binwidth = 1, center = 0.5, color = "grey30",
+                 fill = "grey50") +
+  scale_x_continuous(breaks = seq(0, 24, by = 3)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = "Hours since midnight",
+       y = "# checklists",
+       title = "Distribution of observation start times")
+
+# gam
+g_pd <- ggplot(pd_time) +
+  aes(x = time_observations_started, y = encounter_rate) +
+  geom_line() +
+  scale_x_continuous(breaks = seq(0, 24, by = 3)) +
+  labs(x = "Hours since midnight",
+       y = "Probability of reporting",
+       title = "Observation start time partial dependence")
+
+# combine
+grid.arrange(g_hist, g_pd)
+```
+
+```{r}
+# hours with at least 1% of checklists
+search_hours <- ebird_split_train %>% 
+  mutate(hour = floor(time_observations_started)) %>%
+  count(hour) %>% 
+  mutate(pct = n / sum(n)) %>% 
+  filter(pct >= 0.01)
+
+# constrained peak time
+t_peak <- pd_time %>% 
+  filter(floor(time_observations_started) %in% search_hours$hour) %>% 
+  top_n(1, wt = desc(time_observations_started)) %>% 
+  pull(time_observations_started)
+t_peak
+```
+
+```{r}
+
+
+#####################################################################################
+
+
+# add effort covariates to prediction 
+pred_surface_eff <- pred_surface %>% 
+  mutate(observation_date = ymd(str_glue("{max_lc_year}-06-15")),
+         year = year(observation_date),
+         day_of_year = yday(observation_date),
+         time_observations_started = t_peak,
+         duration_minutes = 60,
+         effort_distance_km = 1,
+         number_observers = 1)
+
+# predict
+pred_rf <- predict(rf, data = pred_surface_eff, type = "response")
+pred_rf <- pred_rf$predictions[, 2]
+# apply calibration models
+pred_rf_cal <- predict(calibration_model, 
+                       data.frame(pred = pred_rf), 
+                       type = "response")
+# add to prediction surface
+pred_er <- bind_cols(pred_surface_eff, encounter_rate = pred_rf_cal) %>% 
+  select(latitude, longitude, encounter_rate) %>% 
+  mutate(encounter_rate = pmin(pmax(encounter_rate, 0), 1))
+
+
+r_pred <- pred_er %>% 
+  # convert to spatial features
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>% 
+  st_transform(crs = projection(r)) %>% 
+  # rasterize
+  rasterize(r)
+r_pred <- r_pred[[-1]]
+
+# save the raster
+tif_dir <- "output"
+if (!dir.exists(tif_dir)) {
+  dir.create(tif_dir)
+}
+writeRaster(r_pred, file.path(tif_dir, "rf-model_encounter-rate_cardinal.tif"), 
+            overwrite = TRUE)
+```
+
+```{r}
+# project predictions
+r_pred_proj <- projectRaster(r_pred, crs = map_proj$proj4string, method = "ngb")
+
+par(mar = c(3.5, 0.25, 0.25, 0.25))
+# set up plot area
+plot(bcr, col = NA, border = NA)
+plot(ne_land, col = "#dddddd", border = "#888888", lwd = 0.5, add = TRUE)
+
+# encounter rate
+r_max <- ceiling(10 * cellStats(r_pred_proj, max)) / 10
+brks <- seq(0, r_max, by = 0.025)
+lbl_brks <- seq(0, r_max, by = 0.1)
+# ebird status and trends color palette
+pal <- abundance_palette(length(brks) - 1)
+plot(r_pred_proj, 
+     col = pal, breaks = brks, 
+     maxpixels = ncell(r_pred_proj),
+     legend = FALSE, add = TRUE)
+
+# borders
+plot(bcr, border = "#000000", col = NA, lwd = 1, add = TRUE)
+plot(ne_state_lines, col = "#ffffff", lwd = 0.75, add = TRUE)
+plot(ne_country_lines, col = "#ffffff", lwd = 1.5, add = TRUE)
+box()
+
+# legend
+par(new = TRUE, mar = c(0, 0, 0, 0))
+title <- "Cardinal Encounter Rate"
+image.plot(zlim = range(brks), legend.only = TRUE, 
+           col = pal, breaks = brks,
+           smallplot = c(0.25, 0.75, 0.06, 0.09),
+           horizontal = TRUE,
+           axis.args = list(at = lbl_brks, labels = lbl_brks,
+                            fg = "black", col.axis = "black",
+                            cex.axis = 0.75, lwd.ticks = 0.5,
+                            padj = -1.5),
+           legend.args = list(text = title,
+                              side = 3, col = "black",
+                              cex = 1, line = 0))
+
+```
+
+
+# artificial neural network
+
+```{r}
+# scaled train data
+ebird_train_scaled <- ebird_split_train
+ebird_train_scaled <- as.data.frame(scale(ebird_train_scaled[,!names(ebird_train_scaled) %in% c("species_observed","pland_01_evergreen_needleleaf")]))
+
+ebird_train_scaled$species_observed <- as.numeric(ebird_split_train[,names(ebird_split_train) %in% c("species_observed")])
+
+ebird_train_scaled$pland_01_evergreen_needleleaf <- as.numeric(ebird_split_train[,names(ebird_split_train) %in% c("pland_01_evergreen_needleleaf")])
+
+
+# scaled test data
+ebird_test_scaled <- ebird_split_test
+ebird_test_scaled <- as.data.frame(scale(ebird_test_scaled[,!names(ebird_test_scaled) %in% c("species_observed","pland_01_evergreen_needleleaf")]))
+
+ebird_test_scaled$species_observed <- as.numeric(ebird_split_test[,names(ebird_split_test) %in% c("species_observed")])
+
+ebird_test_scaled$pland_01_evergreen_needleleaf <- as.numeric(ebird_split_test[,names(ebird_split_test) %in% c("pland_01_evergreen_needleleaf")])
+
+
+# ebird_split_train
+# ebird_split_test
+
+# utility function
+library(neuralnet)
+n <- names(ebird_train_scaled)
+f <- as.formula(paste("species_observed ~", paste(n[!n %in% "species_observed"], collapse = " + ")))
+nn <- neuralnet(f,data=ebird_train_scaled,hidden=2,linear.output=FALSE, likelihood = TRUE,err.fct = 'ce', threshold = 0.1)
+
+# save plot
+
+plot(nn)
+dev.copy(jpeg,filename="../output/nn_plot.jpg",width = 1000)
+dev.off ()
+
+pr.nn <- compute(nn,ebird_test_scaled[,!names(ebird_test_scaled)%in%"species_observed"])
+pr.nn_ <- pr.nn$net.result*(max(ebird_train_scaled$species_observed)-min(ebird_train_scaled$species_observed))+min(ebird_train_scaled$species_observed)
+test.r <- (ebird_test_scaled$species_observed)
+MSE.nn <- sum((test.r - pr.nn_)^2)/nrow(ebird_test_scaled)
+
+Predictions <- pr.nn_
+pr.nn_[pr.nn_ < 0.5] = 0
+pr.nn_[pr.nn_ >= 0.5] = 1
+MSE.nn
+confusionMatrix(as.factor(pr.nn_), as.factor(ebird_test_scaled$species_observed))
+```
+
+```{r}
+library(NeuralNetTools)
+garson(nn) + coord_flip()
+```
+
+```{r}
+imp_var <- garson(nn)$data
+imp_var <- imp_var[order(imp_var$rel_imp,decreasing = T),]
+imp_var[1:10,]
+```
+
+```{r}
+# add effort covariates to prediction 
+pred_surface_eff <- pred_surface %>% 
+  mutate(observation_date = ymd(str_glue("{max_lc_year}-06-15")),
+         year = year(observation_date),
+         day_of_year = yday(observation_date),
+         time_observations_started = t_peak,
+         duration_minutes = 60,
+         effort_distance_km = 1,
+         number_observers = 1)
+
+preProcValues <- preProcess(pred_surface_eff, method = c("center", "scale"))
+
+trainTransformed <- predict(preProcValues, pred_surface_eff)
+
+# predict
+pred_nn <- predict(nn, newdata = trainTransformed, type = "response")
+# pred_rf <- pred_rf$predictions[, 2]
+# apply calibration models
+# pred_rf_cal <- predict(calibration_model,
+#                        data.frame(pred = pred_rf),
+#                        type = "response")
+# add to prediction surface
+pred_er <- bind_cols(pred_surface_eff, encounter_rate = pred_nn) %>% 
+  select(latitude, longitude, encounter_rate) %>% 
+  mutate(encounter_rate = pmin(pmax(encounter_rate, 0), 1))
+
+
+r_pred <- pred_er %>% 
+  # convert to spatial features
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>% 
+  st_transform(crs = projection(r)) %>% 
+  # rasterize
+  rasterize(r)
+r_pred <- r_pred[[-1]]
+
+# save the raster
+tif_dir <- "output"
+if (!dir.exists(tif_dir)) {
+  dir.create(tif_dir)
+}
+writeRaster(r_pred, file.path(tif_dir, "nn-model_encounter-rate_cardinal.tif"), 
+            overwrite = TRUE)
+```
+
+```{r}
+# project predictions
+r_pred_proj <- projectRaster(r_pred, crs = map_proj$proj4string, method = "ngb")
+
+par(mar = c(3.5, 0.25, 0.25, 0.25))
+# set up plot area
+plot(bcr, col = NA, border = NA)
+plot(ne_land, col = "#dddddd", border = "#888888", lwd = 0.5, add = TRUE)
+
+# encounter rate
+r_max <- ceiling(10 * cellStats(r_pred_proj, max)) / 10
+brks <- seq(0, r_max, by = 0.025)
+lbl_brks <- seq(0, r_max, by = 0.1)
+# ebird status and trends color palette
+pal <- abundance_palette(length(brks) - 1)
+plot(r_pred_proj, 
+     col = pal, breaks = brks, 
+     maxpixels = ncell(r_pred_proj),
+     legend = FALSE, add = TRUE)
+
+# borders
+plot(bcr, border = "#000000", col = NA, lwd = 1, add = TRUE)
+plot(ne_state_lines, col = "#ffffff", lwd = 0.75, add = TRUE)
+plot(ne_country_lines, col = "#ffffff", lwd = 1.5, add = TRUE)
+box()
+
+# legend
+par(new = TRUE, mar = c(0, 0, 0, 0))
+title <- "Cardinal Encounter Rate"
+image.plot(zlim = range(brks), legend.only = TRUE, 
+           col = pal, breaks = brks,
+           smallplot = c(0.25, 0.75, 0.06, 0.09),
+           horizontal = TRUE,
+           axis.args = list(at = lbl_brks, labels = lbl_brks,
+                            fg = "black", col.axis = "black",
+                            cex.axis = 0.75, lwd.ticks = 0.5,
+                            padj = -1.5),
+           legend.args = list(text = title,
+                              side = 3, col = "black",
+                              cex = 1, line = 0))
+
+```
+
+
