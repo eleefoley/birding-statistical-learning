@@ -725,9 +725,7 @@ ne_state_lines <- read_sf("../data/raw/gis-data.gpkg", "ne_state_lines") %>%
   st_geometry()
 
 ebird_split_train <- read.table("../data/processed/ebird_split_train.csv", sep = ",", header = T)
-ebird_split_train <- ebird_split_train[,-1]
 ebird_split_test <- read.table("../data/processed/ebird_split_test.csv", sep = ",", header = T)
-ebird_split_test <- ebird_split_test[,-1]
 head(ebird_split_train)
 head(ebird_split_test)
 
